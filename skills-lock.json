@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "skills": {
+    "claude-md": {
+      "source": "bradennss/claude-skills",
+      "sourceType": "github",
+      "computedHash": "572cf4e2a000cf583eea40556db505e1cb7b8b87baa4e39da969b355c9a1525c"
+    },
+    "readme": {
+      "source": "bradennss/claude-skills",
+      "sourceType": "github",
+      "computedHash": "767c53f8e3d6c32cee81a180623fe43b704918ede5a512f1622bda91f8f1cba9"
+    },
+    "rust-dev": {
+      "source": "bradennss/claude-skills",
+      "sourceType": "github",
+      "computedHash": "192be8e6e17cc84de28e1b1dac278ab660cf22aefb8ea8a38856cfff44433e24"
+    },
+    "skill-dev": {
+      "source": "bradennss/claude-skills",
+      "sourceType": "github",
+      "computedHash": "efb1e03fdfd2d86c0afb2630135f3b66e4eaec018d79c555f2056dda42cb2ccc"
+    }
+  }
+}
