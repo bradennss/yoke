@@ -100,7 +100,7 @@ where
         let result = run_review_iteration(params, &context_builder_fn, display).await?;
         total_cost += result.cost_usd;
 
-        if result.verdict == Verdict::Clean {
+        if result.verdict.converged() {
             return Ok(ReviewResult {
                 outcome: ReviewOutcome::Clean {
                     iterations: iteration,
@@ -121,14 +121,21 @@ where
 #[derive(Debug, PartialEq)]
 pub enum Verdict {
     Clean,
+    Minor,
     Changes,
+}
+
+impl Verdict {
+    pub fn converged(&self) -> bool {
+        matches!(self, Verdict::Clean | Verdict::Minor)
+    }
 }
 
 /// Extract a verdict from the model's response text.
 ///
 /// The prompt instructs the model to end with exactly one word on its own line:
-/// `clean` or `changes`. This function checks the last non-empty line for a
-/// standalone verdict word (stripping backticks, quotes, and punctuation).
+/// `clean`, `minor`, or `changes`. This function checks the last non-empty line
+/// for a standalone verdict word (stripping backticks, quotes, and punctuation).
 /// If the last line is not a standalone verdict, defaults to `Changes`
 /// (conservative: assume the model made edits and continue reviewing).
 pub fn parse_verdict(text: &str) -> Verdict {
@@ -142,6 +149,7 @@ pub fn parse_verdict(text: &str) -> Verdict {
 
     match word.to_lowercase().as_str() {
         "clean" => Verdict::Clean,
+        "minor" => Verdict::Minor,
         "changes" => Verdict::Changes,
         _ => Verdict::Changes,
     }
@@ -165,10 +173,20 @@ mod tests {
     }
 
     #[test]
+    fn verdict_minor() {
+        assert_eq!(
+            parse_verdict("Only cosmetic fixes.\n\nminor"),
+            Verdict::Minor
+        );
+    }
+
+    #[test]
     fn verdict_case_insensitive() {
         assert_eq!(parse_verdict("CLEAN"), Verdict::Clean);
+        assert_eq!(parse_verdict("MINOR"), Verdict::Minor);
         assert_eq!(parse_verdict("CHANGES"), Verdict::Changes);
         assert_eq!(parse_verdict("Clean"), Verdict::Clean);
+        assert_eq!(parse_verdict("Minor"), Verdict::Minor);
     }
 
     #[test]
@@ -254,5 +272,18 @@ mod tests {
     fn verdict_with_period() {
         assert_eq!(parse_verdict("changes."), Verdict::Changes);
         assert_eq!(parse_verdict("clean."), Verdict::Clean);
+        assert_eq!(parse_verdict("minor."), Verdict::Minor);
+    }
+
+    #[test]
+    fn verdict_minor_backtick_wrapped() {
+        assert_eq!(parse_verdict("Cosmetic only.\n\n`minor`"), Verdict::Minor);
+    }
+
+    #[test]
+    fn verdict_converged() {
+        assert!(Verdict::Clean.converged());
+        assert!(Verdict::Minor.converged());
+        assert!(!Verdict::Changes.converged());
     }
 }

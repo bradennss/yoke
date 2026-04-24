@@ -8,7 +8,7 @@ use crate::state::{PhaseState, PhaseStatus, PlanStep, StageStatus, YokeState, pl
 use crate::template;
 use crate::workflow::cleanup::{FileCleanupGuard, SingleFileGuard};
 use crate::workflow::context::ContextBuilder;
-use crate::workflow::review::{ReviewParams, Verdict, run_review_iteration};
+use crate::workflow::review::{ReviewParams, run_review_iteration};
 use crate::workflow::{build_system_prompt, invoke_sub_agent, prompt_loader};
 
 const GENERATION_TOOLS: &str = "Read,Write,Edit,Glob,Grep,Bash";
@@ -129,7 +129,7 @@ pub async fn run_plan(
         );
 
         let plan_path_clone = plan_path.clone();
-        let review_params = ReviewParams {
+        let mut review_params = ReviewParams {
             config,
             prompt_template: &review_prompt,
             model: &config.models.review,
@@ -153,8 +153,12 @@ pub async fn run_plan(
         let mut display = StreamDisplay::new();
         let mut converged = false;
         for iteration in starting_iteration..=max {
+            if iteration > 1 {
+                review_params.effort = config.effort.review.reduced();
+            }
+            let effort_label = review_params.effort.as_str();
             crate::output::print_step(&format!(
-                "Reviewing implementation plan, iteration {iteration}/{max}"
+                "Reviewing implementation plan, iteration {iteration}/{max} (effort: {effort_label})"
             ));
             let iter_result =
                 run_review_iteration(&review_params, &context_fn, &mut display).await?;
@@ -164,7 +168,7 @@ pub async fn run_plan(
             state.plan_step = Some(PlanStep::PlanReview { iteration });
             state.save(&state_path)?;
 
-            if iter_result.verdict == Verdict::Clean {
+            if iter_result.verdict.converged() {
                 converged = true;
                 break;
             }

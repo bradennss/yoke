@@ -23,11 +23,19 @@ Then check plan-level concerns:
 - **Working agreement**: does it cover conventions that tend to drift (error handling patterns, ID generation, nullable parameter binding, serialization)?
 - **Handoff section**: does it explicitly state what the next phase inherits?
 
-Write down every issue you find with its task number and a one-line description. Do not fix anything yet.
+Classify each issue as **structural** or **cosmetic**:
+
+- **Structural**: wrong types, missing fields, broken dependency ordering, spec violations, missing files, incorrect signatures, config wiring gaps. These cause compilation failures, incorrect behavior, or spec deviation.
+- **Cosmetic**: imprecise wording in acceptance criteria, formatting, naming style in descriptions, slightly loose spec anchor citations that still point to the right section.
+
+Write down every issue with its task number, classification, and a one-line description. Do not fix anything yet.
 
 ### 2. Fix: resolve all issues
 
-After the sweep is complete, edit the plan file to resolve every issue on your list. Do not leave TODO markers; resolve each issue completely.
+After the sweep is complete:
+
+- Fix every **structural** issue. Do not leave TODO markers; resolve each one completely.
+- Fix **cosmetic** issues only if the fix is trivial and self-contained (a single phrase change, a minor rewording). Skip cosmetic issues that risk introducing new problems.
 
 ### 3. Verify
 
@@ -40,6 +48,12 @@ Re-read the sections you edited to confirm they are internally consistent and no
 - Be decisive. If something looks wrong, fix it. Do not reason yourself out of issues.
 - Fix everything you find. Do not stop after a few issues and defer the rest to the next iteration.
 
-End your response with exactly one word on its own line: `changes` if you made any edits, or `clean` if no edits were needed.
+## Verdict
+
+End your response with exactly one word on its own line:
+
+- `changes` if you made any structural fixes.
+- `minor` if you only made cosmetic fixes (no structural issues found or all structural issues were already correct).
+- `clean` if no edits were needed.
 
 {{context}}

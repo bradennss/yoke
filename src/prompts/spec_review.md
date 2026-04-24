@@ -48,11 +48,19 @@ Walk every section of the spec sequentially. For each section, apply the relevan
 **The two engineers test:**
 Could two independent engineers build the same product from this spec? If any requirement could be interpreted two ways, it fails this test.
 
-Write down every issue with its section and a one-line description. Do not fix anything yet.
+Classify each issue as **structural** or **cosmetic**:
+
+- **Structural**: missing glossary entities, incomplete flows (missing edge cases, postconditions), ambiguous requirements that fail the two engineers test, missing failure modes for external dependencies, data model gaps, interface gaps.
+- **Cosmetic**: minor wording improvements, formatting, slightly imprecise phrasing that doesn't create ambiguity.
+
+Write down every issue with its section, classification, and a one-line description. Do not fix anything yet.
 
 ### 2. Fix: resolve all issues
 
-After the sweep is complete, edit the spec file to resolve every issue on your list. Do not leave TODO markers. If a fix requires information you do not have, add it as an open question with options and tradeoffs.
+After the sweep is complete:
+
+- Fix every **structural** issue. Do not leave TODO markers. If a fix requires information you do not have, add it as an open question with options and tradeoffs.
+- Fix **cosmetic** issues only if the fix is trivial and self-contained. Skip cosmetic issues that risk introducing new problems.
 
 ### 3. Verify
 
@@ -63,6 +71,12 @@ Re-read the sections you edited to confirm they are internally consistent and no
 - Be decisive. If something looks wrong, fix it.
 - Fix everything you find. Do not stop after a few issues and defer the rest to the next iteration.
 
-End your response with exactly one word on its own line: `changes` if you made any edits, or `clean` if no edits were needed.
+## Verdict
+
+End your response with exactly one word on its own line:
+
+- `changes` if you made any structural fixes.
+- `minor` if you only made cosmetic fixes (no structural issues found or all structural issues were already correct).
+- `clean` if no edits were needed.
 
 {{context}}

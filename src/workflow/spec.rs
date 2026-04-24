@@ -8,7 +8,7 @@ use crate::state::{SpecStep, StageStatus, YokeState, spec_step_ordinal};
 use crate::template;
 use crate::workflow::cleanup::SingleFileGuard;
 use crate::workflow::context::ContextBuilder;
-use crate::workflow::review::{ReviewParams, Verdict, run_review_iteration};
+use crate::workflow::review::{ReviewParams, run_review_iteration};
 use crate::workflow::{build_system_prompt, invoke_sub_agent, prompt_loader};
 
 const GENERATION_TOOLS: &str = "Read,Write,Edit,Glob,Grep,Bash";
@@ -108,7 +108,7 @@ pub async fn run_spec(
         );
 
         let product_spec_path_clone = product_spec_path.clone();
-        let review_params = ReviewParams {
+        let mut review_params = ReviewParams {
             config,
             prompt_template: &review_prompt,
             model: &config.models.review,
@@ -132,8 +132,12 @@ pub async fn run_spec(
         let mut display = StreamDisplay::new();
         let mut converged = false;
         for iteration in starting_iteration..=max {
+            if iteration > 1 {
+                review_params.effort = config.effort.review.reduced();
+            }
+            let effort_label = review_params.effort.as_str();
             crate::output::print_step(&format!(
-                "Reviewing product spec, iteration {iteration}/{max}"
+                "Reviewing product spec, iteration {iteration}/{max} (effort: {effort_label})"
             ));
             let iter_result =
                 run_review_iteration(&review_params, &context_fn, &mut display).await?;
@@ -143,7 +147,7 @@ pub async fn run_spec(
             state.spec_step = Some(SpecStep::ProductSpecReview { iteration });
             state.save(&state_path)?;
 
-            if iter_result.verdict == Verdict::Clean {
+            if iter_result.verdict.converged() {
                 converged = true;
                 break;
             }
@@ -233,7 +237,7 @@ pub async fn run_spec(
 
         let technical_spec_path_clone = technical_spec_path.clone();
         let product_spec_path_clone = product_spec_path.clone();
-        let tech_review_params = ReviewParams {
+        let mut tech_review_params = ReviewParams {
             config,
             prompt_template: &tech_review_prompt,
             model: &config.models.review,
@@ -259,8 +263,12 @@ pub async fn run_spec(
         let mut display = StreamDisplay::new();
         let mut converged = false;
         for iteration in starting_iteration..=max {
+            if iteration > 1 {
+                tech_review_params.effort = config.effort.review.reduced();
+            }
+            let effort_label = tech_review_params.effort.as_str();
             crate::output::print_step(&format!(
-                "Reviewing technical spec, iteration {iteration}/{max}"
+                "Reviewing technical spec, iteration {iteration}/{max} (effort: {effort_label})"
             ));
             let iter_result =
                 run_review_iteration(&tech_review_params, &context_fn, &mut display).await?;
@@ -270,7 +278,7 @@ pub async fn run_spec(
             state.spec_step = Some(SpecStep::TechnicalSpecReview { iteration });
             state.save(&state_path)?;
 
-            if iter_result.verdict == Verdict::Clean {
+            if iter_result.verdict.converged() {
                 converged = true;
                 break;
             }

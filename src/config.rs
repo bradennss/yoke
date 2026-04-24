@@ -93,6 +93,15 @@ impl Effort {
             Effort::Max => "max",
         }
     }
+
+    pub fn reduced(self) -> Self {
+        match self {
+            Effort::Max => Effort::High,
+            Effort::High => Effort::Medium,
+            Effort::Medium => Effort::Low,
+            Effort::Low => Effort::Low,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Default)]
@@ -364,6 +373,14 @@ execution = "max"
         assert_eq!(Effort::Medium.as_str(), "medium");
         assert_eq!(Effort::High.as_str(), "high");
         assert_eq!(Effort::Max.as_str(), "max");
+    }
+
+    #[test]
+    fn effort_reduced() {
+        assert_eq!(Effort::Max.reduced(), Effort::High);
+        assert_eq!(Effort::High.reduced(), Effort::Medium);
+        assert_eq!(Effort::Medium.reduced(), Effort::Low);
+        assert_eq!(Effort::Low.reduced(), Effort::Low);
     }
 
     #[test]

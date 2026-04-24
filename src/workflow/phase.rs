@@ -9,7 +9,7 @@ use crate::state::{PhaseStatus, PhaseStep, StepCost, YokeState};
 use crate::template;
 use crate::workflow::cleanup::FileCleanupGuard;
 use crate::workflow::context::{ContextBuilder, estimate_tokens};
-use crate::workflow::review::{ReviewParams, Verdict, run_review_iteration};
+use crate::workflow::review::{ReviewParams, run_review_iteration};
 use crate::workflow::{build_system_prompt, invoke_sub_agent, prompt_loader};
 
 const RESEARCH_TOOLS: &str = "Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Agent";
@@ -310,7 +310,7 @@ async fn execute_steps(
                 let docs_dir_clone = docs_dir.to_path_buf();
                 let padded_clone = padded.to_string();
                 let project_dir_clone = project_dir.to_path_buf();
-                let review_params = ReviewParams {
+                let mut review_params = ReviewParams {
                     config,
                     prompt_template: &review_prompt,
                     model: &config.models.review,
@@ -338,8 +338,12 @@ async fn execute_steps(
                 let max = config.review.max_iterations;
                 let mut converged = false;
                 for iteration in starting_iteration..=max {
+                    if iteration > 1 {
+                        review_params.effort = config.effort.review.reduced();
+                    }
+                    let effort_label = review_params.effort.as_str();
                     crate::output::print_step(&format!(
-                        "Reviewing plan for phase {phase_number} ({phase_title}), iteration {iteration}/{max}"
+                        "Reviewing plan for phase {phase_number} ({phase_title}), iteration {iteration}/{max} (effort: {effort_label})"
                     ));
                     let iter_result =
                         run_review_iteration(&review_params, &context_fn, &mut display).await?;
@@ -354,7 +358,7 @@ async fn execute_steps(
                         Some(PhaseStep::PlanReview { iteration });
                     state.save(state_path)?;
 
-                    if iter_result.verdict == Verdict::Clean {
+                    if iter_result.verdict.converged() {
                         converged = true;
                         break;
                     }
@@ -451,7 +455,7 @@ async fn execute_steps(
                 let docs_dir_clone = docs_dir.to_path_buf();
                 let padded_clone = padded.to_string();
                 let project_dir_clone = project_dir.to_path_buf();
-                let review_params = ReviewParams {
+                let mut review_params = ReviewParams {
                     config,
                     prompt_template: &code_review_prompt,
                     model: &config.models.code_review,
@@ -479,8 +483,12 @@ async fn execute_steps(
                 let max = config.review.max_iterations;
                 let mut converged = false;
                 for iteration in starting_iteration..=max {
+                    if iteration > 1 {
+                        review_params.effort = config.effort.code_review.reduced();
+                    }
+                    let effort_label = review_params.effort.as_str();
                     crate::output::print_step(&format!(
-                        "Reviewing code for phase {phase_number} ({phase_title}), iteration {iteration}/{max}"
+                        "Reviewing code for phase {phase_number} ({phase_title}), iteration {iteration}/{max} (effort: {effort_label})"
                     ));
                     let iter_result =
                         run_review_iteration(&review_params, &context_fn, &mut display).await?;
@@ -495,7 +503,7 @@ async fn execute_steps(
                         Some(PhaseStep::CodeReview { iteration });
                     state.save(state_path)?;
 
-                    if iter_result.verdict == Verdict::Clean {
+                    if iter_result.verdict.converged() {
                         converged = true;
                         break;
                     }

@@ -23,11 +23,19 @@ Read the phase plan and walk every task sequentially. For each task, check:
 - **Conventions**: code follows CLAUDE.md rules (error handling patterns, naming, no prohibited patterns). No unnecessary comments, no dead code, no placeholder implementations.
 - **Integration**: the task's code integrates correctly with code from other tasks (imports resolve, types align, config fields exist).
 
-Write down every issue you find with its task number and a one-line description. Do not fix anything yet.
+Classify each issue as **structural** or **cosmetic**:
+
+- **Structural**: compilation errors, incorrect behavior, missing tests, spec violations, wrong types or signatures, broken integration between modules.
+- **Cosmetic**: naming style, comment wording, import ordering, formatting that doesn't affect correctness.
+
+Write down every issue with its task number, classification, and a one-line description. Do not fix anything yet.
 
 ### 3. Fix: resolve all issues
 
-After the sweep is complete, fix every issue on your list: edit source code, add missing tests, correct convention violations, remove dead code.
+After the sweep is complete:
+
+- Fix every **structural** issue: edit source code, add missing tests, correct behavior. Do not leave TODO markers.
+- Fix **cosmetic** issues only if the fix is trivial and self-contained. Skip cosmetic issues that risk introducing new problems.
 
 ### 4. Gate: rerun and verify
 
@@ -44,6 +52,12 @@ If any command fails, fix the failure and rerun until all gates pass. Do not sto
 - Be decisive. If something looks wrong, fix it. Do not reason yourself out of issues.
 - Fix everything you find. Do not stop after a few issues and defer the rest to the next iteration.
 
-End your response with exactly one word on its own line: `changes` if you made any edits, or `clean` if no edits were needed.
+## Verdict
+
+End your response with exactly one word on its own line:
+
+- `changes` if you made any structural fixes.
+- `minor` if you only made cosmetic fixes (no structural issues found or all structural issues were already correct).
+- `clean` if no edits were needed.
 
 {{context}}
