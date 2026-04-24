@@ -242,15 +242,14 @@ async fn execute_steps(
                 let template_text = loader.load("phase_plan_generate")?;
                 let target_file = format!("docs/plans/phase-{padded}.md");
                 let mut ctx = ContextBuilder::new();
-                ctx.add_file("phase spec", phase_spec_path)?;
-                add_spec_context(&mut ctx, docs_dir, padded)?;
-                for research_path in glob_research_files(project_dir, phase_number) {
-                    let label = research_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "research".to_string());
-                    ctx.add_file(&label, &research_path)?;
-                }
+                add_reference_context(
+                    &mut ctx,
+                    phase_spec_path,
+                    docs_dir,
+                    padded,
+                    project_dir,
+                    phase_number,
+                )?;
                 if let Some(handoff_path) = find_most_recent_handoff(project_dir, phase_number) {
                     ctx.add_file("most recent handoff", &handoff_path)?;
                 }
@@ -307,6 +306,10 @@ async fn execute_steps(
                 );
 
                 let plan_file_clone = plan_file.clone();
+                let phase_spec_clone = phase_spec_path.to_path_buf();
+                let docs_dir_clone = docs_dir.to_path_buf();
+                let padded_clone = padded.to_string();
+                let project_dir_clone = project_dir.to_path_buf();
                 let review_params = ReviewParams {
                     config,
                     prompt_template: &review_prompt,
@@ -320,9 +323,14 @@ async fn execute_steps(
                 };
                 let context_fn = || {
                     let path = plan_file_clone.clone();
+                    let spec = phase_spec_clone.clone();
+                    let docs = docs_dir_clone.clone();
+                    let pad = padded_clone.clone();
+                    let proj = project_dir_clone.clone();
                     async move {
                         let mut cb = ContextBuilder::new();
                         cb.add_file("phase plan", &path)?;
+                        add_reference_context(&mut cb, &spec, &docs, &pad, &proj, phase_number)?;
                         Ok(cb)
                     }
                 };
@@ -374,15 +382,14 @@ async fn execute_steps(
                 let plan_file = docs_dir.join(format!("plans/phase-{padded}.md"));
                 let mut ctx = ContextBuilder::new();
                 ctx.add_file("phase plan", &plan_file)?;
-                ctx.add_file("phase spec", phase_spec_path)?;
-                add_spec_context(&mut ctx, docs_dir, padded)?;
-                for research_path in glob_research_files(project_dir, phase_number) {
-                    let label = research_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "research".to_string());
-                    ctx.add_file(&label, &research_path)?;
-                }
+                add_reference_context(
+                    &mut ctx,
+                    phase_spec_path,
+                    docs_dir,
+                    padded,
+                    project_dir,
+                    phase_number,
+                )?;
                 if let Some(handoff_path) = find_most_recent_handoff(project_dir, phase_number) {
                     ctx.add_file("most recent handoff", &handoff_path)?;
                 }
@@ -441,6 +448,9 @@ async fn execute_steps(
 
                 let plan_file_clone = plan_file.clone();
                 let phase_spec_clone = phase_spec_path.to_path_buf();
+                let docs_dir_clone = docs_dir.to_path_buf();
+                let padded_clone = padded.to_string();
+                let project_dir_clone = project_dir.to_path_buf();
                 let review_params = ReviewParams {
                     config,
                     prompt_template: &code_review_prompt,
@@ -455,10 +465,13 @@ async fn execute_steps(
                 let context_fn = || {
                     let plan = plan_file_clone.clone();
                     let spec = phase_spec_clone.clone();
+                    let docs = docs_dir_clone.clone();
+                    let pad = padded_clone.clone();
+                    let proj = project_dir_clone.clone();
                     async move {
                         let mut cb = ContextBuilder::new();
                         cb.add_file("phase plan", &plan)?;
-                        cb.add_file("phase spec", &spec)?;
+                        add_reference_context(&mut cb, &spec, &docs, &pad, &proj, phase_number)?;
                         Ok(cb)
                     }
                 };
@@ -613,7 +626,9 @@ fn steps_from(starting: &PhaseStep) -> Vec<PhaseStep> {
         .position(|s| step_ordinal(s) == step_ordinal(starting))
         .unwrap_or(0);
 
-    all[start_idx..].to_vec()
+    let mut result = all[start_idx..].to_vec();
+    result[0] = starting.clone();
+    result
 }
 
 fn step_ordinal(step: &PhaseStep) -> u8 {
@@ -655,6 +670,28 @@ fn specs_below_threshold(product_spec: &Path, technical_spec: &Path, config: &Yo
         total += estimate_tokens(&content);
     }
     total < threshold
+}
+
+/// Add phase spec, spec extracts (or full specs), and research docs to a context builder.
+/// Used by planning, plan review, code review, and execution steps.
+fn add_reference_context(
+    ctx: &mut ContextBuilder,
+    phase_spec_path: &Path,
+    docs_dir: &Path,
+    padded: &str,
+    project_dir: &Path,
+    phase_number: usize,
+) -> Result<()> {
+    ctx.add_file("phase spec", phase_spec_path)?;
+    add_spec_context(ctx, docs_dir, padded)?;
+    for research_path in glob_research_files(project_dir, phase_number) {
+        let label = research_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "research".to_string());
+        ctx.add_file(&label, &research_path)?;
+    }
+    Ok(())
 }
 
 /// Inject spec context for steps that run after extraction.
@@ -991,6 +1028,18 @@ mod tests {
         let steps = steps_from(&PhaseStep::Commit);
         assert_eq!(steps.len(), 1);
         assert_eq!(step_ordinal(&steps[0]), 7);
+    }
+
+    #[test]
+    fn steps_from_plan_review_preserves_iteration() {
+        let steps = steps_from(&PhaseStep::PlanReview { iteration: 3 });
+        assert_eq!(steps[0], PhaseStep::PlanReview { iteration: 3 });
+    }
+
+    #[test]
+    fn steps_from_code_review_preserves_iteration() {
+        let steps = steps_from(&PhaseStep::CodeReview { iteration: 2 });
+        assert_eq!(steps[0], PhaseStep::CodeReview { iteration: 2 });
     }
 
     #[test]

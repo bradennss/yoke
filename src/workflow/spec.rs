@@ -232,6 +232,7 @@ pub async fn run_spec(
         );
 
         let technical_spec_path_clone = technical_spec_path.clone();
+        let product_spec_path_clone = product_spec_path.clone();
         let tech_review_params = ReviewParams {
             config,
             prompt_template: &tech_review_prompt,
@@ -244,10 +245,12 @@ pub async fn run_spec(
             dry_run,
         };
         let context_fn = || {
-            let path = technical_spec_path_clone.clone();
+            let tech_path = technical_spec_path_clone.clone();
+            let prod_path = product_spec_path_clone.clone();
             async move {
                 let mut cb = ContextBuilder::new();
-                cb.add_file("technical-spec.md", &path)?;
+                cb.add_file("technical-spec.md", &tech_path)?;
+                cb.add_file("product-spec.md", &prod_path)?;
                 Ok(cb)
             }
         };
