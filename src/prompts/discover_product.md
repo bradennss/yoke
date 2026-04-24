@@ -13,6 +13,8 @@ Focus on:
 4. Data flow (inputs, outputs, transformations, storage)
 5. Key constraints and design decisions visible in the code
 
-Write the product specification to `{{target_file}}`. Structure it with clear sections covering each area above. Be factual and grounded in what the code actually does, not what it could do.
+Write the product specification to `{{target_file}}`. Structure the output according to the following format. You may omit sections that are not applicable to the existing system (e.g., Open questions), but follow the structure for all sections you include.
+
+{{partial:format_product_spec}}
 
 Do not speculate about future features. Document the current state accurately.

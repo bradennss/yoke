@@ -15,6 +15,8 @@ Focus on:
 6. Build and deployment (toolchain, build process, configuration)
 7. Integration points (external services, file system interactions, network calls)
 
-Write the technical specification to `{{target_file}}`. Structure it with clear sections. Reference specific files and modules by path. Be precise about types, function signatures, and module boundaries.
+Write the technical specification to `{{target_file}}`. Structure the output according to the following format. Reference specific files and modules by path. Be precise about types, function signatures, and module boundaries.
+
+{{partial:format_technical_spec}}
 
 Do not include implementation plans or future work. Document the current architecture as it exists.

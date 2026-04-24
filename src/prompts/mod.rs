@@ -21,6 +21,15 @@ const DISCOVER_REVIEW: &str = include_str!("discover_review.md");
 const CLASSIFY: &str = include_str!("classify.md");
 const KNOWLEDGE_UPDATE: &str = include_str!("knowledge_update.md");
 const SPEC_AMEND: &str = include_str!("spec_amend.md");
+const FORMAT_PRODUCT_SPEC: &str = include_str!("format_product_spec.md");
+const FORMAT_TECHNICAL_SPEC: &str = include_str!("format_technical_spec.md");
+const FORMAT_PLAN: &str = include_str!("format_plan.md");
+const FORMAT_PHASE_SPEC: &str = include_str!("format_phase_spec.md");
+const FORMAT_RESEARCH: &str = include_str!("format_research.md");
+const FORMAT_SPEC_EXTRACT: &str = include_str!("format_spec_extract.md");
+const FORMAT_EXECUTION_SUMMARY: &str = include_str!("format_execution_summary.md");
+const FORMAT_HANDOFF: &str = include_str!("format_handoff.md");
+const FORMAT_SPEC_AMENDMENT: &str = include_str!("format_spec_amendment.md");
 
 pub struct PromptLoader {
     override_dir: Option<PathBuf>,
@@ -66,6 +75,15 @@ impl PromptLoader {
             "classify" => CLASSIFY,
             "knowledge_update" => KNOWLEDGE_UPDATE,
             "spec_amend" => SPEC_AMEND,
+            "format_product_spec" => FORMAT_PRODUCT_SPEC,
+            "format_technical_spec" => FORMAT_TECHNICAL_SPEC,
+            "format_plan" => FORMAT_PLAN,
+            "format_phase_spec" => FORMAT_PHASE_SPEC,
+            "format_research" => FORMAT_RESEARCH,
+            "format_spec_extract" => FORMAT_SPEC_EXTRACT,
+            "format_execution_summary" => FORMAT_EXECUTION_SUMMARY,
+            "format_handoff" => FORMAT_HANDOFF,
+            "format_spec_amendment" => FORMAT_SPEC_AMENDMENT,
             _ => anyhow::bail!("unknown prompt template: {name}"),
         };
 
@@ -115,6 +133,15 @@ mod tests {
         "classify",
         "knowledge_update",
         "spec_amend",
+        "format_product_spec",
+        "format_technical_spec",
+        "format_plan",
+        "format_phase_spec",
+        "format_research",
+        "format_spec_extract",
+        "format_execution_summary",
+        "format_handoff",
+        "format_spec_amendment",
     ];
 
     #[test]
@@ -257,6 +284,77 @@ mod tests {
                 "{name} missing summary tags from review_common"
             );
         }
+    }
+
+    #[test]
+    fn load_resolves_format_partials() {
+        let loader = PromptLoader::new(None);
+        let templates_with_format_partials = [
+            "spec_product",
+            "spec_technical",
+            "plan_generate",
+            "phase_plan_generate",
+            "research",
+            "spec_extract",
+            "execution",
+            "handoff",
+            "spec_amend",
+            "discover_product",
+            "discover_technical",
+        ];
+        for name in templates_with_format_partials {
+            let content = loader.load(name).unwrap();
+            assert!(
+                !content.contains("{{partial:"),
+                "{name} still contains unresolved partial reference"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_and_phase_plan_share_phase_format() {
+        let loader = PromptLoader::new(None);
+        let plan = loader.load("plan_generate").unwrap();
+        let phase_plan = loader.load("phase_plan_generate").unwrap();
+        assert!(
+            plan.contains("### Context"),
+            "plan_generate missing Context from format_phase_spec"
+        );
+        assert!(
+            phase_plan.contains("### Context"),
+            "phase_plan_generate missing Context from format_phase_spec"
+        );
+        assert!(
+            plan.contains("### Handoff"),
+            "plan_generate missing Handoff from format_phase_spec"
+        );
+        assert!(
+            phase_plan.contains("### Handoff"),
+            "phase_plan_generate missing Handoff from format_phase_spec"
+        );
+    }
+
+    #[test]
+    fn discover_prompts_contain_format_sections() {
+        let loader = PromptLoader::new(None);
+        let product = loader.load("discover_product").unwrap();
+        let technical = loader.load("discover_technical").unwrap();
+        assert!(
+            product.contains("### 1. Overview"),
+            "discover_product missing Overview from format_product_spec"
+        );
+        assert!(
+            product.contains("### 8. Open questions"),
+            "discover_product missing Open questions from format_product_spec"
+        );
+        assert!(
+            technical.contains("### 1. System overview"),
+            "discover_technical missing System overview from format_technical_spec"
+        );
+        assert!(
+            technical.contains("## Principles"),
+            "discover_technical missing Principles from format_technical_spec"
+        );
     }
 
     #[test]
