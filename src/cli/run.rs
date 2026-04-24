@@ -1,9 +1,9 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::claude;
-use crate::config::YokeConfig;
+use crate::config::{InteractionMode, YokeConfig};
 use crate::state::{PhaseStatus, YokeState};
 use crate::workflow;
 use crate::workflow::phase::parse_step_name;
@@ -28,7 +28,9 @@ pub async fn run(
 
     let target_phase = match phase_number {
         Some(n) => n,
-        None => next_pending_phase(&state)?,
+        None => next_pending_phase(&state).ok_or_else(|| {
+            anyhow::anyhow!("no pending or failed phases found. All phases are complete.")
+        })?,
     };
 
     if let Some(step_name) = &from {
@@ -45,19 +47,26 @@ pub async fn run(
 
     workflow::phase::run_phase(project_dir, target_phase, &config, &mut state, dry_run).await?;
 
+    let auto_advance = phase_number.is_none() && config.interaction != InteractionMode::Milestones;
+    if auto_advance {
+        while let Some(next) = next_pending_phase(&state) {
+            workflow::phase::run_phase(project_dir, next, &config, &mut state, dry_run).await?;
+        }
+    }
+
     Ok(())
 }
 
-fn next_pending_phase(state: &YokeState) -> Result<usize> {
+fn next_pending_phase(state: &YokeState) -> Option<usize> {
     for phase in &state.phases {
         if phase.status == PhaseStatus::InProgress {
-            return Ok(phase.number);
+            return Some(phase.number);
         }
     }
     for phase in &state.phases {
         if phase.status == PhaseStatus::Pending || phase.status == PhaseStatus::Failed {
-            return Ok(phase.number);
+            return Some(phase.number);
         }
     }
-    bail!("no pending or failed phases found. All phases are complete.")
+    None
 }
