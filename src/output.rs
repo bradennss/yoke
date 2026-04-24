@@ -176,12 +176,10 @@ impl StreamDisplay {
     }
 
     fn print_separator(&self, next: BlockKind) {
-        if self.last_block == BlockKind::None {
+        if self.last_block == BlockKind::None || self.last_block == next {
             return;
         }
-        if self.last_block == BlockKind::Text || next == BlockKind::Text {
-            eprintln!();
-        }
+        eprintln!();
     }
 }
 
