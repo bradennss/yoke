@@ -9,12 +9,13 @@ use crate::state::{PhaseStatus, PhaseStep, StepCost, YokeState};
 use crate::template;
 use crate::workflow::cleanup::FileCleanupGuard;
 use crate::workflow::context::{ContextBuilder, estimate_tokens};
-use crate::workflow::review::{ReviewParams, run_review_iteration};
-use crate::workflow::{build_system_prompt, invoke_sub_agent, prompt_loader};
+use crate::workflow::review::{ReviewParams, run_review_loop};
+use crate::workflow::{build_system_prompt, format_gate_commands, invoke_sub_agent, prompt_loader};
 
 const RESEARCH_TOOLS: &str = "Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Agent";
 const PLANNING_TOOLS: &str = "Read,Write,Edit,Glob,Grep";
 const REVIEW_TOOLS: &str = "Read,Write,Edit,Glob,Grep";
+const CODE_REVIEW_TOOLS: &str = "Bash,Read,Write,Edit,Glob,Grep";
 
 pub async fn run_phase(
     project_dir: &Path,
@@ -320,6 +321,7 @@ async fn execute_steps(
                     system_prompt: system_prompt_ref,
                     cwd: Some(project_dir),
                     dry_run,
+                    prior_findings: None,
                 };
                 let context_fn = || {
                     let path = plan_file_clone.clone();
@@ -335,34 +337,25 @@ async fn execute_steps(
                     }
                 };
 
-                let max = config.review.max_iterations;
-                let mut converged = false;
-                for iteration in starting_iteration..=max {
-                    if iteration > 1 {
-                        review_params.effort = config.effort.review.reduced();
-                    }
-                    let effort_label = review_params.effort.as_str();
-                    crate::output::print_step(&format!(
-                        "Reviewing plan for phase {phase_number} ({phase_title}), iteration {iteration}/{max} (effort: {effort_label})"
-                    ));
-                    let iter_result =
-                        run_review_iteration(&review_params, &context_fn, &mut display).await?;
-
-                    accumulate_cost(
-                        state,
-                        phase_idx,
-                        iter_result.cost_usd,
-                        &format!("plan review (iteration {iteration})"),
-                    );
-                    state.phases[phase_idx].current_step =
-                        Some(PhaseStep::PlanReview { iteration });
-                    state.save(state_path)?;
-
-                    if iter_result.verdict.converged() {
-                        converged = true;
-                        break;
-                    }
-                }
+                let converged = run_review_loop(
+                    &mut review_params,
+                    config.effort.review,
+                    starting_iteration,
+                    &format!("Reviewing plan for phase {phase_number} ({phase_title})"),
+                    &context_fn,
+                    |iteration, cost| {
+                        accumulate_cost(
+                            state,
+                            phase_idx,
+                            cost,
+                            &format!("plan review (iteration {iteration})"),
+                        );
+                        state.phases[phase_idx].current_step =
+                            Some(PhaseStep::PlanReview { iteration });
+                        state.save(state_path)
+                    },
+                )
+                .await?;
 
                 if !converged {
                     eprintln!(
@@ -397,12 +390,14 @@ async fn execute_steps(
                 if let Some(handoff_path) = find_most_recent_handoff(project_dir, phase_number) {
                     ctx.add_file("most recent handoff", &handoff_path)?;
                 }
+                let gate_commands_text = format_gate_commands(&config.gate_commands);
                 let prompt = template::replace_vars(
                     &ctx.apply(&template_text),
                     &[
                         ("project_name", &config.project.name),
                         ("phase_number", &phase_number.to_string()),
                         ("phase_number_padded", padded),
+                        ("gate_commands", &gate_commands_text),
                     ],
                 );
                 display.set_context_stats(ctx.total_tokens(), ctx.block_stats().len());
@@ -441,12 +436,14 @@ async fn execute_steps(
 
                 let code_review_template = loader.load("code_review")?;
                 let plan_file = docs_dir.join(format!("plans/phase-{padded}.md"));
+                let gate_commands_text = format_gate_commands(&config.gate_commands);
                 let code_review_prompt = template::replace_vars(
                     &code_review_template,
                     &[
                         ("project_name", &config.project.name),
                         ("phase_number", &phase_number.to_string()),
                         ("phase_number_padded", padded),
+                        ("gate_commands", &gate_commands_text),
                     ],
                 );
 
@@ -461,10 +458,11 @@ async fn execute_steps(
                     model: &config.models.code_review,
                     effort: config.effort.code_review,
                     max_iterations: config.review.max_iterations,
-                    tools: None,
+                    tools: Some(CODE_REVIEW_TOOLS),
                     system_prompt: system_prompt_ref,
                     cwd: Some(project_dir),
                     dry_run,
+                    prior_findings: None,
                 };
                 let context_fn = || {
                     let plan = plan_file_clone.clone();
@@ -480,34 +478,25 @@ async fn execute_steps(
                     }
                 };
 
-                let max = config.review.max_iterations;
-                let mut converged = false;
-                for iteration in starting_iteration..=max {
-                    if iteration > 1 {
-                        review_params.effort = config.effort.code_review.reduced();
-                    }
-                    let effort_label = review_params.effort.as_str();
-                    crate::output::print_step(&format!(
-                        "Reviewing code for phase {phase_number} ({phase_title}), iteration {iteration}/{max} (effort: {effort_label})"
-                    ));
-                    let iter_result =
-                        run_review_iteration(&review_params, &context_fn, &mut display).await?;
-
-                    accumulate_cost(
-                        state,
-                        phase_idx,
-                        iter_result.cost_usd,
-                        &format!("code review (iteration {iteration})"),
-                    );
-                    state.phases[phase_idx].current_step =
-                        Some(PhaseStep::CodeReview { iteration });
-                    state.save(state_path)?;
-
-                    if iter_result.verdict.converged() {
-                        converged = true;
-                        break;
-                    }
-                }
+                let converged = run_review_loop(
+                    &mut review_params,
+                    config.effort.code_review,
+                    starting_iteration,
+                    &format!("Reviewing code for phase {phase_number} ({phase_title})"),
+                    &context_fn,
+                    |iteration, cost| {
+                        accumulate_cost(
+                            state,
+                            phase_idx,
+                            cost,
+                            &format!("code review (iteration {iteration})"),
+                        );
+                        state.phases[phase_idx].current_step =
+                            Some(PhaseStep::CodeReview { iteration });
+                        state.save(state_path)
+                    },
+                )
+                .await?;
 
                 if !converged {
                     eprintln!(

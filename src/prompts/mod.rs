@@ -14,6 +14,7 @@ const CODE_REVIEW: &str = include_str!("code_review.md");
 const HANDOFF: &str = include_str!("handoff.md");
 const SPEC_EXTRACT: &str = include_str!("spec_extract.md");
 const PHASE_PLAN_GENERATE: &str = include_str!("phase_plan_generate.md");
+const REVIEW_COMMON: &str = include_str!("review_common.md");
 
 pub struct PromptLoader {
     override_dir: Option<PathBuf>,
@@ -25,6 +26,11 @@ impl PromptLoader {
     }
 
     pub fn load(&self, name: &str) -> Result<String> {
+        let content = self.load_raw(name)?;
+        Ok(self.resolve_partials(&content))
+    }
+
+    fn load_raw(&self, name: &str) -> Result<String> {
         if let Some(ref dir) = self.override_dir {
             let override_path = dir.join(format!("{name}.md"));
             if override_path.exists() {
@@ -47,10 +53,28 @@ impl PromptLoader {
             "handoff" => HANDOFF,
             "spec_extract" => SPEC_EXTRACT,
             "phase_plan_generate" => PHASE_PLAN_GENERATE,
+            "review_common" => REVIEW_COMMON,
             _ => anyhow::bail!("unknown prompt template: {name}"),
         };
 
         Ok(content.to_string())
+    }
+
+    /// Resolve `{{partial:name}}` references by loading and inlining the named template.
+    /// Uses a distinct `{{partial:...}}` syntax to avoid collisions with regular
+    /// `{{variable}}` substitution.
+    fn resolve_partials(&self, content: &str) -> String {
+        let mut result = content.to_string();
+        while let Some(start) = result.find("{{partial:") {
+            let Some(end) = result[start..].find("}}") else {
+                break;
+            };
+            let end = start + end;
+            let name = &result[start + "{{partial:".len()..end];
+            let replacement = self.load_raw(name).unwrap_or_default();
+            result = format!("{}{replacement}{}", &result[..start], &result[end + 2..]);
+        }
+        result
     }
 }
 
@@ -72,6 +96,7 @@ mod tests {
         "code_review",
         "handoff",
         "spec_extract",
+        "review_common",
     ];
 
     #[test]
@@ -149,5 +174,80 @@ mod tests {
         let loader = PromptLoader::new(None);
         let result = loader.load("handoff").unwrap();
         assert!(result.contains("technical writer"));
+    }
+
+    #[test]
+    fn resolve_partials_inlines_content() {
+        let loader = PromptLoader::new(None);
+        let input = "before\n{{partial:review_common}}\nafter";
+        let result = loader.resolve_partials(input);
+        assert!(result.starts_with("before\n"));
+        assert!(result.ends_with("\nafter"));
+        assert!(result.contains("## Continuity"));
+        assert!(result.contains("## Verdict"));
+        assert!(!result.contains("{{partial:"));
+    }
+
+    #[test]
+    fn resolve_partials_no_partial_unchanged() {
+        let loader = PromptLoader::new(None);
+        let input = "no partials here, just {{context}}";
+        let result = loader.resolve_partials(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn resolve_partials_unknown_partial_replaced_with_empty() {
+        let loader = PromptLoader::new(None);
+        let input = "before{{partial:nonexistent}}after";
+        let result = loader.resolve_partials(input);
+        assert_eq!(result, "beforeafter");
+    }
+
+    #[test]
+    fn resolve_partials_unclosed_tag_left_as_is() {
+        let loader = PromptLoader::new(None);
+        let input = "before{{partial:review_common";
+        let result = loader.resolve_partials(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn load_resolves_partials_in_review_prompts() {
+        let loader = PromptLoader::new(None);
+        for name in ["plan_review", "code_review", "spec_review"] {
+            let content = loader.load(name).unwrap();
+            assert!(
+                !content.contains("{{partial:"),
+                "{name} still contains unresolved partial reference"
+            );
+            assert!(
+                content.contains("## Continuity"),
+                "{name} missing Continuity section from review_common"
+            );
+            assert!(
+                content.contains("## Verdict"),
+                "{name} missing Verdict section from review_common"
+            );
+            assert!(
+                content.contains("<review-summary>"),
+                "{name} missing summary tags from review_common"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_partials_with_override() {
+        let dir = std::env::temp_dir().join("yoke_partial_override_test");
+        let _ = fs::create_dir_all(&dir);
+        fs::write(dir.join("review_common.md"), "CUSTOM PARTIAL").unwrap();
+
+        let loader = PromptLoader::new(Some(dir.clone()));
+        let input = "before\n{{partial:review_common}}\nafter";
+        let result = loader.resolve_partials(input);
+        assert!(result.contains("CUSTOM PARTIAL"));
+        assert!(!result.contains("## Continuity"));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

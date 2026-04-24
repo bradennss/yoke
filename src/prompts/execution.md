@@ -7,7 +7,7 @@ Your task is to implement the deliverables for this phase according to the plan.
 For each task in the plan:
 
 1. Implement the code described in the task's files and types/functions sections.
-2. Write tests that cover the task's acceptance criteria. Acceptance criteria must be objectively verifiable; do not consider a task done because the implementation looks plausible.
+2. Write tests that cover the task's acceptance criteria. Acceptance criteria must be objectively verifiable; do not consider a task done because the implementation looks plausible. Each test assertion must be as specific as the criterion it covers: if a criterion specifies content (e.g., "message contains X"), the test must assert on that content, not merely that a message exists.
 3. Run the gate commands. The task is **not complete** until every gate command passes:
 
 {{gate_commands}}

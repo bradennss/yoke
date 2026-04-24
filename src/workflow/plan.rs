@@ -8,7 +8,7 @@ use crate::state::{PhaseState, PhaseStatus, PlanStep, StageStatus, YokeState, pl
 use crate::template;
 use crate::workflow::cleanup::{FileCleanupGuard, SingleFileGuard};
 use crate::workflow::context::ContextBuilder;
-use crate::workflow::review::{ReviewParams, run_review_iteration};
+use crate::workflow::review::{ReviewParams, run_review_loop};
 use crate::workflow::{build_system_prompt, invoke_sub_agent, prompt_loader};
 
 const GENERATION_TOOLS: &str = "Read,Write,Edit,Glob,Grep,Bash";
@@ -139,6 +139,7 @@ pub async fn run_plan(
             system_prompt: Some(system_prompt.as_str()),
             cwd: Some(project_dir),
             dry_run,
+            prior_findings: None,
         };
         let context_fn = || {
             let path = plan_path_clone.clone();
@@ -149,30 +150,20 @@ pub async fn run_plan(
             }
         };
 
-        let max = config.review.max_iterations;
-        let mut display = StreamDisplay::new();
-        let mut converged = false;
-        for iteration in starting_iteration..=max {
-            if iteration > 1 {
-                review_params.effort = config.effort.review.reduced();
-            }
-            let effort_label = review_params.effort.as_str();
-            crate::output::print_step(&format!(
-                "Reviewing implementation plan, iteration {iteration}/{max} (effort: {effort_label})"
-            ));
-            let iter_result =
-                run_review_iteration(&review_params, &context_fn, &mut display).await?;
-
-            state.plan_cost_usd += iter_result.cost_usd;
-            state.total_cost_usd += iter_result.cost_usd;
-            state.plan_step = Some(PlanStep::PlanReview { iteration });
-            state.save(&state_path)?;
-
-            if iter_result.verdict.converged() {
-                converged = true;
-                break;
-            }
-        }
+        let converged = run_review_loop(
+            &mut review_params,
+            config.effort.review,
+            starting_iteration,
+            "Reviewing implementation plan",
+            &context_fn,
+            |iteration, cost| {
+                state.plan_cost_usd += cost;
+                state.total_cost_usd += cost;
+                state.plan_step = Some(PlanStep::PlanReview { iteration });
+                state.save(&state_path)
+            },
+        )
+        .await?;
 
         if !converged {
             eprintln!(

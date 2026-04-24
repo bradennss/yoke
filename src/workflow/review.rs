@@ -9,26 +9,6 @@ use crate::output::StreamDisplay;
 use super::context::ContextBuilder;
 use super::invoke_sub_agent;
 
-#[derive(Debug, PartialEq)]
-pub enum ReviewOutcome {
-    Clean { iterations: u8 },
-    MaxIterationsReached { iterations: u8 },
-}
-
-impl ReviewOutcome {
-    pub fn iterations(&self) -> u8 {
-        match self {
-            ReviewOutcome::Clean { iterations }
-            | ReviewOutcome::MaxIterationsReached { iterations } => *iterations,
-        }
-    }
-}
-
-pub struct ReviewResult {
-    pub outcome: ReviewOutcome,
-    pub total_cost_usd: f64,
-}
-
 pub struct ReviewParams<'a> {
     pub config: &'a YokeConfig,
     pub prompt_template: &'a str,
@@ -39,11 +19,13 @@ pub struct ReviewParams<'a> {
     pub system_prompt: Option<&'a str>,
     pub cwd: Option<&'a Path>,
     pub dry_run: bool,
+    pub prior_findings: Option<String>,
 }
 
 pub struct ReviewIterationResult {
     pub verdict: Verdict,
     pub cost_usd: f64,
+    pub result_text: String,
 }
 
 pub async fn run_review_iteration<F, Fut>(
@@ -55,7 +37,12 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<ContextBuilder>>,
 {
-    let context = context_builder_fn().await?;
+    let mut context = context_builder_fn().await?;
+    if let Some(ref findings) = params.prior_findings
+        && !findings.is_empty()
+    {
+        context.add_content("prior review findings", findings);
+    }
     let prompt = context.apply(params.prompt_template);
 
     let result = invoke_sub_agent(
@@ -75,47 +62,71 @@ where
     Ok(ReviewIterationResult {
         verdict,
         cost_usd: result.cost_usd,
+        result_text: result.result_text,
     })
 }
 
-pub async fn review_cycle<F, Fut>(
-    params: &ReviewParams<'_>,
-    context_builder_fn: F,
-    display: &mut StreamDisplay,
-) -> Result<ReviewResult>
+/// Run a review loop with findings accumulation and convergence checking.
+///
+/// Calls `run_review_iteration` repeatedly until the verdict converges or
+/// `review_params.max_iterations` is reached. Each iteration's summary is
+/// accumulated and injected as context for the next iteration.
+///
+/// `on_iteration` is called after each iteration with `(iteration_number, cost_usd)`.
+/// It is responsible for cost tracking, state step updates, and persisting state.
+///
+/// Returns `true` if the review converged, `false` if max iterations were reached.
+pub async fn run_review_loop<F, Fut, OnIter>(
+    review_params: &mut ReviewParams<'_>,
+    base_effort: Effort,
+    starting_iteration: u8,
+    step_message_prefix: &str,
+    context_fn: &F,
+    mut on_iteration: OnIter,
+) -> Result<bool>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<ContextBuilder>>,
+    OnIter: FnMut(u8, f64) -> Result<()>,
 {
-    if params.dry_run {
-        return Ok(ReviewResult {
-            outcome: ReviewOutcome::Clean { iterations: 0 },
-            total_cost_usd: 0.0,
-        });
+    if review_params.dry_run {
+        return Ok(true);
     }
 
-    let mut total_cost = 0.0;
+    let max = review_params.max_iterations;
+    let mut display = StreamDisplay::new();
+    let mut accumulated_findings = String::new();
 
-    for iteration in 1..=params.max_iterations {
-        let result = run_review_iteration(params, &context_builder_fn, display).await?;
-        total_cost += result.cost_usd;
+    for iteration in starting_iteration..=max {
+        if iteration > 1 {
+            review_params.effort = base_effort.reduced();
+        }
+        review_params.prior_findings = if accumulated_findings.is_empty() {
+            None
+        } else {
+            Some(accumulated_findings.clone())
+        };
+        let effort_label = review_params.effort.as_str();
+        crate::output::print_step(&format!(
+            "{step_message_prefix}, iteration {iteration}/{max} (effort: {effort_label})"
+        ));
+        let iter_result = run_review_iteration(review_params, context_fn, &mut display).await?;
 
-        if result.verdict.converged() {
-            return Ok(ReviewResult {
-                outcome: ReviewOutcome::Clean {
-                    iterations: iteration,
-                },
-                total_cost_usd: total_cost,
-            });
+        let summary =
+            extract_findings_summary(&iter_result.result_text, iteration, &iter_result.verdict);
+        if !accumulated_findings.is_empty() {
+            accumulated_findings.push_str("\n\n");
+        }
+        accumulated_findings.push_str(&summary);
+
+        on_iteration(iteration, iter_result.cost_usd)?;
+
+        if iter_result.verdict.converged() {
+            return Ok(true);
         }
     }
 
-    Ok(ReviewResult {
-        outcome: ReviewOutcome::MaxIterationsReached {
-            iterations: params.max_iterations,
-        },
-        total_cost_usd: total_cost,
-    })
+    Ok(false)
 }
 
 #[derive(Debug, PartialEq)]
@@ -153,6 +164,42 @@ pub fn parse_verdict(text: &str) -> Verdict {
         "changes" => Verdict::Changes,
         _ => Verdict::Changes,
     }
+}
+
+/// Extract the structured summary block from a review iteration's response.
+///
+/// The review prompt instructs the model to write a `<review-summary>` block
+/// containing validated areas, issues found, and fixes applied. This function
+/// extracts that block and pairs it with the parsed verdict so subsequent
+/// iterations have structured context about prior work.
+///
+/// Falls back to the last 2000 characters of the raw response if no summary
+/// block is found (e.g., if the model didn't follow the format).
+pub fn extract_findings_summary(result_text: &str, iteration: u8, verdict: &Verdict) -> String {
+    let verdict_label = match verdict {
+        Verdict::Clean => "clean",
+        Verdict::Minor => "minor",
+        Verdict::Changes => "changes",
+    };
+
+    let summary_content = extract_tag_content(result_text, "review-summary").unwrap_or_else(|| {
+        let chars: Vec<char> = result_text.chars().collect();
+        let start = chars.len().saturating_sub(2000);
+        chars[start..].iter().collect()
+    });
+
+    format!("### Iteration {iteration} (verdict: {verdict_label})\n{summary_content}")
+}
+
+fn extract_tag_content(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)?;
+    let end = text.find(&close)?;
+    if end <= start {
+        return None;
+    }
+    Some(text[start + open.len()..end].trim().to_string())
 }
 
 #[cfg(test)]
@@ -285,5 +332,63 @@ mod tests {
         assert!(Verdict::Clean.converged());
         assert!(Verdict::Minor.converged());
         assert!(!Verdict::Changes.converged());
+    }
+
+    #[test]
+    fn extract_tag_content_basic() {
+        let text = "before\n<review-summary>\nhello world\n</review-summary>\nafter";
+        assert_eq!(
+            extract_tag_content(text, "review-summary"),
+            Some("hello world".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_tag_content_missing() {
+        assert_eq!(extract_tag_content("no tags here", "review-summary"), None);
+    }
+
+    #[test]
+    fn extract_tag_content_empty() {
+        let text = "<review-summary></review-summary>";
+        assert_eq!(
+            extract_tag_content(text, "review-summary"),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn extract_tag_content_reversed_tags() {
+        let text = "</review-summary>content<review-summary>";
+        assert_eq!(extract_tag_content(text, "review-summary"), None);
+    }
+
+    #[test]
+    fn findings_summary_with_tag() {
+        let text = "Some preamble.\n<review-summary>\nTask 1: clean\nTask 2: fixed type\n</review-summary>\n\nchanges";
+        let result = extract_findings_summary(text, 3, &Verdict::Changes);
+        assert!(result.starts_with("### Iteration 3 (verdict: changes)"));
+        assert!(result.contains("Task 1: clean"));
+        assert!(result.contains("Task 2: fixed type"));
+        assert!(!result.contains("Some preamble"));
+    }
+
+    #[test]
+    fn findings_summary_fallback_without_tag() {
+        let text = "No summary tags here. Just raw review output.";
+        let result = extract_findings_summary(text, 1, &Verdict::Minor);
+        assert!(result.starts_with("### Iteration 1 (verdict: minor)"));
+        assert!(result.contains("No summary tags here"));
+    }
+
+    #[test]
+    fn findings_summary_fallback_truncates_long_text() {
+        let long_text = "x".repeat(5000);
+        let result = extract_findings_summary(&long_text, 2, &Verdict::Clean);
+        assert!(result.starts_with("### Iteration 2 (verdict: clean)"));
+        let content_after_header = result
+            .strip_prefix("### Iteration 2 (verdict: clean)\n")
+            .unwrap();
+        assert_eq!(content_after_header.len(), 2000);
     }
 }

@@ -48,10 +48,16 @@ Walk every section of the spec sequentially. For each section, apply the relevan
 **The two engineers test:**
 Could two independent engineers build the same product from this spec? If any requirement could be interpreted two ways, it fails this test.
 
-Classify each issue as **structural** or **cosmetic**:
+Classify each issue into one of three tiers:
 
-- **Structural**: missing glossary entities, incomplete flows (missing edge cases, postconditions), ambiguous requirements that fail the two engineers test, missing failure modes for external dependencies, data model gaps, interface gaps.
-- **Cosmetic**: minor wording improvements, formatting, slightly imprecise phrasing that doesn't create ambiguity.
+- **Structural**: the planning agent would produce an incorrect or incomplete plan because of this issue, and would not self-correct. Examples: missing glossary entities, incomplete flows (missing edge cases, postconditions), ambiguous requirements that fail the two engineers test, missing failure modes for external dependencies, data model gaps, interface gaps.
+- **Deferred**: a real issue, but one that would be caught and resolved during planning or implementation without spec guidance. For each deferred issue, state the specific mechanism that catches it (e.g., "the planning step checks backward traceability," "the research step discovers this constraint," "the implementation agent's compiler rejects this"). Fix it anyway, but it does not block convergence.
+- **Cosmetic**: not a real issue; minor wording improvements, formatting, slightly imprecise phrasing that doesn't create ambiguity. Do not fix unless trivial.
+
+Guard rails for classification:
+- An issue involving data model definitions, entity relationships, or interface contracts is **never** deferred; these are always structural because downstream phases copy them from the spec.
+- An issue is only deferred if you can name the specific downstream mechanism that would catch it. "The planning agent would probably notice" is not a valid mechanism.
+- If you cannot name a mechanism, classify as structural.
 
 Write down every issue with its section, classification, and a one-line description. Do not fix anything yet.
 
@@ -60,6 +66,7 @@ Write down every issue with its section, classification, and a one-line descript
 After the sweep is complete:
 
 - Fix every **structural** issue. Do not leave TODO markers. If a fix requires information you do not have, add it as an open question with options and tradeoffs.
+- Fix every **deferred** issue the same way. These improve spec quality even though they would eventually self-correct.
 - Fix **cosmetic** issues only if the fix is trivial and self-contained. Skip cosmetic issues that risk introducing new problems.
 
 ### 3. Verify
@@ -71,12 +78,6 @@ Re-read the sections you edited to confirm they are internally consistent and no
 - Be decisive. If something looks wrong, fix it.
 - Fix everything you find. Do not stop after a few issues and defer the rest to the next iteration.
 
-## Verdict
-
-End your response with exactly one word on its own line:
-
-- `changes` if you made any structural fixes.
-- `minor` if you only made cosmetic fixes (no structural issues found or all structural issues were already correct).
-- `clean` if no edits were needed.
+{{partial:review_common}}
 
 {{context}}

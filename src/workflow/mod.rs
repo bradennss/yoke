@@ -164,22 +164,24 @@ pub fn prompt_loader(project_dir: &Path) -> PromptLoader {
     PromptLoader::new(dir)
 }
 
+pub fn format_gate_commands(commands: &[String]) -> String {
+    if commands.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec![
+        "## Gate commands".to_string(),
+        String::new(),
+        "All gate commands must pass before work is considered complete:".to_string(),
+    ];
+    for (i, cmd) in commands.iter().enumerate() {
+        lines.push(format!("{}. `{cmd}`", i + 1));
+    }
+    lines.join("\n")
+}
+
 pub fn build_system_prompt(config: &YokeConfig, loader: &PromptLoader) -> Result<String> {
     let template = loader.load("system")?;
-
-    let gate_commands = if config.gate_commands.is_empty() {
-        String::new()
-    } else {
-        let mut lines = vec![
-            "## Gate commands".to_string(),
-            String::new(),
-            "All gate commands must pass before work is considered complete:".to_string(),
-        ];
-        for (i, cmd) in config.gate_commands.iter().enumerate() {
-            lines.push(format!("{}. `{cmd}`", i + 1));
-        }
-        lines.join("\n")
-    };
+    let gate_commands = format_gate_commands(&config.gate_commands);
 
     Ok(template::replace_vars(
         &template,

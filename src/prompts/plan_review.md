@@ -23,10 +23,16 @@ Then check plan-level concerns:
 - **Working agreement**: does it cover conventions that tend to drift (error handling patterns, ID generation, nullable parameter binding, serialization)?
 - **Handoff section**: does it explicitly state what the next phase inherits?
 
-Classify each issue as **structural** or **cosmetic**:
+Classify each issue into one of three tiers:
 
-- **Structural**: wrong types, missing fields, broken dependency ordering, spec violations, missing files, incorrect signatures, config wiring gaps. These cause compilation failures, incorrect behavior, or spec deviation.
-- **Cosmetic**: imprecise wording in acceptance criteria, formatting, naming style in descriptions, slightly loose spec anchor citations that still point to the right section.
+- **Structural**: the implementation agent would produce wrong code, wrong behavior, or a compilation failure because of this issue, and would not self-correct. Examples: wrong types in function signatures, missing required fields in struct literals, broken dependency ordering, spec requirements with no corresponding task, incorrect SQL column names.
+- **Deferred**: a real issue, but one that would be caught and resolved during implementation or code review without plan guidance. For each deferred issue, state the specific mechanism that catches it (e.g., "the compiler rejects the missing field," "the acceptance criterion already requires this test," "the code review checks this"). Fix it anyway, but it does not block convergence.
+- **Cosmetic**: not a real issue; wording, formatting, naming, style. Do not fix unless trivial.
+
+Guard rails for classification:
+- An issue involving types, SQL schemas, or function signatures is **never** deferred; these are always structural because the implementation agent copies them from the plan.
+- An issue is only deferred if you can name the specific downstream mechanism (compiler error, existing test, code review check) that would catch it. "The implementation agent would probably notice" is not a valid mechanism.
+- If you cannot name a mechanism, classify as structural.
 
 Write down every issue with its task number, classification, and a one-line description. Do not fix anything yet.
 
@@ -35,6 +41,7 @@ Write down every issue with its task number, classification, and a one-line desc
 After the sweep is complete:
 
 - Fix every **structural** issue. Do not leave TODO markers; resolve each one completely.
+- Fix every **deferred** issue the same way. These improve plan quality even though they would eventually self-correct.
 - Fix **cosmetic** issues only if the fix is trivial and self-contained (a single phrase change, a minor rewording). Skip cosmetic issues that risk introducing new problems.
 
 ### 3. Verify
@@ -48,12 +55,6 @@ Re-read the sections you edited to confirm they are internally consistent and no
 - Be decisive. If something looks wrong, fix it. Do not reason yourself out of issues.
 - Fix everything you find. Do not stop after a few issues and defer the rest to the next iteration.
 
-## Verdict
-
-End your response with exactly one word on its own line:
-
-- `changes` if you made any structural fixes.
-- `minor` if you only made cosmetic fixes (no structural issues found or all structural issues were already correct).
-- `clean` if no edits were needed.
+{{partial:review_common}}
 
 {{context}}

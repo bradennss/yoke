@@ -19,14 +19,21 @@ Read the phase plan and walk every task sequentially. For each task, check:
 - **Deliverables exist**: the files listed in the task are present at the specified paths.
 - **Structure matches**: module hierarchy, struct fields, function signatures, and public API surface match what the plan describes. Read the actual source files.
 - **Behavior matches spec**: the code does what the spec sections cited in the task's spec anchor describe. Nothing more, nothing less. Cross-reference against the spec extracts and research docs in context.
-- **Tests exist and cover acceptance criteria**: each acceptance criterion from the plan has a corresponding test. Run the tests to confirm they pass.
+- **Tests exist and cover acceptance criteria**: each acceptance criterion from the plan has a corresponding test whose assertions are as specific as the criterion. A criterion that specifies content, argument values, or state requires assertions that check that content, values, or state; a test that merely confirms something happened is insufficient. Run the tests to confirm they pass.
+- **Idempotency and duplicate safety**: tools and handlers that mutate state (INSERT, UPDATE) are safe to call twice with the same arguments. Either the operation is naturally idempotent (INSERT OR IGNORE, UPDATE ... WHERE state = X) or the code checks for existing records before mutating. Flag any mutation that would create duplicates or corrupt state if called twice.
 - **Conventions**: code follows CLAUDE.md rules (error handling patterns, naming, no prohibited patterns). No unnecessary comments, no dead code, no placeholder implementations.
 - **Integration**: the task's code integrates correctly with code from other tasks (imports resolve, types align, config fields exist).
 
-Classify each issue as **structural** or **cosmetic**:
+Classify each issue into one of three tiers:
 
-- **Structural**: compilation errors, incorrect behavior, missing tests, spec violations, wrong types or signatures, broken integration between modules.
-- **Cosmetic**: naming style, comment wording, import ordering, formatting that doesn't affect correctness.
+- **Structural**: the code would produce compilation failures, incorrect runtime behavior, or spec deviations, and no downstream mechanism would catch it. Examples: wrong types in function signatures, missing required fields, spec requirements not implemented, broken integration between modules.
+- **Deferred**: a real issue, but one that would be caught by a specific mechanism without code review intervention. For each deferred issue, state the mechanism (e.g., "the compiler rejects this," "the existing test covers this," "gate commands catch this"). Fix it anyway, but it does not block convergence.
+- **Cosmetic**: not a real issue; naming style, comment wording, import ordering, formatting. Do not fix unless trivial.
+
+Guard rails for classification:
+- An issue involving types, SQL schemas, or function signatures is **never** deferred; these are always structural.
+- An issue is only deferred if you can name the specific mechanism that would catch it. "Someone would probably notice" is not a valid mechanism.
+- If you cannot name a mechanism, classify as structural.
 
 Write down every issue with its task number, classification, and a one-line description. Do not fix anything yet.
 
@@ -35,6 +42,7 @@ Write down every issue with its task number, classification, and a one-line desc
 After the sweep is complete:
 
 - Fix every **structural** issue: edit source code, add missing tests, correct behavior. Do not leave TODO markers.
+- Fix every **deferred** issue the same way. These improve code quality even though they would eventually self-correct.
 - Fix **cosmetic** issues only if the fix is trivial and self-contained. Skip cosmetic issues that risk introducing new problems.
 
 ### 4. Gate: rerun and verify
@@ -52,12 +60,6 @@ If any command fails, fix the failure and rerun until all gates pass. Do not sto
 - Be decisive. If something looks wrong, fix it. Do not reason yourself out of issues.
 - Fix everything you find. Do not stop after a few issues and defer the rest to the next iteration.
 
-## Verdict
-
-End your response with exactly one word on its own line:
-
-- `changes` if you made any structural fixes.
-- `minor` if you only made cosmetic fixes (no structural issues found or all structural issues were already correct).
-- `clean` if no edits were needed.
+{{partial:review_common}}
 
 {{context}}
