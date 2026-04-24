@@ -1,20 +1,85 @@
+pub mod classify;
 pub mod cleanup;
 pub mod context;
 pub mod phase;
+pub mod pipeline;
 pub mod plan;
 pub mod review;
 pub mod spec;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use rand::RngExt;
 
 use crate::claude::{ClaudeInvocation, StreamEvent};
 use crate::config::{Effort, RetryConfig, YokeConfig};
+use crate::intent::IntentState;
+use crate::intent::store::IntentStore;
 use crate::output::StreamDisplay;
 use crate::prompts::PromptLoader;
+use crate::state::StepCost;
 use crate::template;
+
+pub struct IntentContext<'a> {
+    pub project_dir: &'a Path,
+    pub work_dir: PathBuf,
+    pub intent_dir: PathBuf,
+    pub specs_dir: PathBuf,
+    pub intent: &'a mut IntentState,
+    pub config: &'a YokeConfig,
+    pub store: &'a IntentStore,
+    pub loader: PromptLoader,
+    pub system_prompt: String,
+    pub dry_run: bool,
+}
+
+impl<'a> IntentContext<'a> {
+    pub fn save_intent(&self) -> Result<()> {
+        self.intent.save(&self.intent_dir.join("intent.json"))
+    }
+
+    pub fn plan_path(&self) -> PathBuf {
+        self.intent_dir.join("plan.md")
+    }
+
+    pub fn phases_dir(&self) -> PathBuf {
+        self.intent_dir.join("phases")
+    }
+
+    pub fn research_dir(&self) -> PathBuf {
+        self.intent_dir.join("research")
+    }
+
+    pub fn plans_dir(&self) -> PathBuf {
+        self.intent_dir.join("plans")
+    }
+
+    pub fn handoffs_dir(&self) -> PathBuf {
+        self.intent_dir.join("handoffs")
+    }
+
+    pub fn extracts_dir(&self) -> PathBuf {
+        self.intent_dir.join("extracts")
+    }
+
+    pub fn product_spec_path(&self) -> PathBuf {
+        self.specs_dir.join("product.md")
+    }
+
+    pub fn technical_spec_path(&self) -> PathBuf {
+        self.specs_dir.join("technical.md")
+    }
+
+    pub fn accumulate_cost(&mut self, phase_idx: usize, cost: f64, step_label: &str) {
+        self.intent.phases[phase_idx].cost_usd += cost;
+        self.intent.phases[phase_idx].step_costs.push(StepCost {
+            step: step_label.to_string(),
+            cost_usd: cost,
+        });
+        self.intent.total_cost_usd += cost;
+    }
+}
 
 pub struct SubAgentResult {
     pub result_text: String,
@@ -195,7 +260,7 @@ pub fn build_system_prompt(config: &YokeConfig, loader: &PromptLoader) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ModelConfig, ProjectConfig, YokeConfig};
+    use crate::config::YokeConfig;
 
     #[test]
     fn is_retryable_rate_limit() {
@@ -264,22 +329,21 @@ mod tests {
         assert!(d > 0);
     }
 
+    fn test_config(name: &str) -> YokeConfig {
+        let toml_str = format!(
+            r#"
+[project]
+name = "{name}"
+"#
+        );
+        toml::from_str(&toml_str).unwrap()
+    }
+
     #[test]
     fn build_system_prompt_with_gate_commands() {
         let loader = PromptLoader::new(None);
-        let config = YokeConfig {
-            project: ProjectConfig {
-                name: "test".to_string(),
-            },
-            models: ModelConfig::default(),
-            effort: Default::default(),
-            gate_commands: vec!["cargo fmt".to_string(), "cargo test".to_string()],
-            interaction: Default::default(),
-            git: Default::default(),
-            review: Default::default(),
-            retry: Default::default(),
-            context: Default::default(),
-        };
+        let mut config = test_config("test");
+        config.gate_commands = vec!["cargo fmt".to_string(), "cargo test".to_string()];
 
         let prompt = build_system_prompt(&config, &loader).unwrap();
         assert!(prompt.contains("Gate commands"));
@@ -291,19 +355,7 @@ mod tests {
     #[test]
     fn build_system_prompt_no_gate_commands() {
         let loader = PromptLoader::new(None);
-        let config = YokeConfig {
-            project: ProjectConfig {
-                name: "minimal".to_string(),
-            },
-            models: ModelConfig::default(),
-            effort: Default::default(),
-            gate_commands: vec![],
-            interaction: Default::default(),
-            git: Default::default(),
-            review: Default::default(),
-            retry: Default::default(),
-            context: Default::default(),
-        };
+        let config = test_config("minimal");
 
         let prompt = build_system_prompt(&config, &loader).unwrap();
         assert!(!prompt.contains("Gate commands"));
@@ -313,23 +365,91 @@ mod tests {
     #[test]
     fn build_system_prompt_contains_principles() {
         let loader = PromptLoader::new(None);
-        let config = YokeConfig {
-            project: ProjectConfig {
-                name: "any".to_string(),
-            },
-            models: ModelConfig::default(),
-            effort: Default::default(),
-            gate_commands: vec![],
-            interaction: Default::default(),
-            git: Default::default(),
-            review: Default::default(),
-            retry: Default::default(),
-            context: Default::default(),
-        };
+        let config = test_config("any");
 
         let prompt = build_system_prompt(&config, &loader).unwrap();
         assert!(prompt.contains("Maintainability"));
         assert!(prompt.contains("Hard rules"));
         assert!(prompt.contains("comments earn their keep"));
+    }
+
+    #[test]
+    fn intent_context_path_methods() {
+        use crate::intent::store::IntentStore;
+        use crate::intent::{Classification, Depth, IntentState};
+        use std::path::Path;
+
+        let mut intent = IntentState::new(
+            1,
+            "Test build".to_string(),
+            "Building test".to_string(),
+            Classification::Build,
+            Depth::Full,
+        );
+        let config = test_config("test");
+        let store = IntentStore::new(Path::new("/project"));
+        let loader = PromptLoader::new(None);
+
+        let mut ctx = IntentContext {
+            project_dir: Path::new("/project"),
+            work_dir: PathBuf::from("/project"),
+            intent_dir: PathBuf::from("/project/.yoke/intents/i-001-test-build"),
+            specs_dir: PathBuf::from("/project/.yoke/specs"),
+            intent: &mut intent,
+            config: &config,
+            store: &store,
+            loader,
+            system_prompt: String::new(),
+            dry_run: false,
+        };
+
+        assert_eq!(
+            ctx.plan_path(),
+            PathBuf::from("/project/.yoke/intents/i-001-test-build/plan.md")
+        );
+        assert_eq!(
+            ctx.phases_dir(),
+            PathBuf::from("/project/.yoke/intents/i-001-test-build/phases")
+        );
+        assert_eq!(
+            ctx.research_dir(),
+            PathBuf::from("/project/.yoke/intents/i-001-test-build/research")
+        );
+        assert_eq!(
+            ctx.plans_dir(),
+            PathBuf::from("/project/.yoke/intents/i-001-test-build/plans")
+        );
+        assert_eq!(
+            ctx.handoffs_dir(),
+            PathBuf::from("/project/.yoke/intents/i-001-test-build/handoffs")
+        );
+        assert_eq!(
+            ctx.extracts_dir(),
+            PathBuf::from("/project/.yoke/intents/i-001-test-build/extracts")
+        );
+        assert_eq!(
+            ctx.product_spec_path(),
+            PathBuf::from("/project/.yoke/specs/product.md")
+        );
+        assert_eq!(
+            ctx.technical_spec_path(),
+            PathBuf::from("/project/.yoke/specs/technical.md")
+        );
+
+        ctx.intent.phases.push(crate::state::PhaseState {
+            number: 1,
+            title: "Setup".to_string(),
+            status: crate::state::PhaseStatus::InProgress,
+            current_step: None,
+            cost_usd: 0.0,
+            step_costs: Vec::new(),
+            pre_phase_commit: None,
+            started_at: None,
+            completed_at: None,
+        });
+        ctx.accumulate_cost(0, 0.25, "research");
+        assert_eq!(ctx.intent.phases[0].cost_usd, 0.25);
+        assert_eq!(ctx.intent.phases[0].step_costs.len(), 1);
+        assert_eq!(ctx.intent.total_cost_usd, 0.25);
     }
 }

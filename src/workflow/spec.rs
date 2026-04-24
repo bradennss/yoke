@@ -1,87 +1,80 @@
-use std::path::Path;
+use anyhow::{Result, bail};
 
-use anyhow::{Context, Result, bail};
-
-use crate::config::{InteractionMode, YokeConfig};
+use crate::config::InteractionMode;
+use crate::intent::Classification;
 use crate::output::StreamDisplay;
-use crate::state::{SpecStep, StageStatus, YokeState, spec_step_ordinal};
+use crate::state::{SpecStep, StageStatus, spec_step_ordinal};
 use crate::template;
+use crate::workflow::IntentContext;
 use crate::workflow::cleanup::SingleFileGuard;
 use crate::workflow::context::ContextBuilder;
 use crate::workflow::review::{ReviewParams, run_review_loop};
-use crate::workflow::{build_system_prompt, invoke_sub_agent, prompt_loader};
 
 const GENERATION_TOOLS: &str = "Read,Write,Edit,Glob,Grep,Bash";
 const REVIEW_TOOLS: &str = "Read,Write,Edit,Glob,Grep";
 
-pub async fn run_spec(
-    project_dir: &Path,
-    description: &str,
-    config: &YokeConfig,
-    state: &mut YokeState,
-    dry_run: bool,
-) -> Result<()> {
-    let docs_dir = project_dir.join("docs");
-    std::fs::create_dir_all(&docs_dir).context("creating docs directory")?;
+pub async fn run_spec(ctx: &mut IntentContext<'_>, description: &str) -> Result<()> {
+    std::fs::create_dir_all(&ctx.specs_dir)?;
 
-    let loader = prompt_loader(project_dir);
-    let system_prompt = build_system_prompt(config, &loader)?;
-    let state_path = project_dir.join(".yoke/state.json");
+    if ctx.intent.classification != Classification::Build {
+        return amend_specs(ctx).await;
+    }
 
-    let starting_step = state
+    let starting_step = ctx
+        .intent
         .spec_step
         .clone()
         .unwrap_or(SpecStep::ProductSpecGeneration);
     let start_ord = spec_step_ordinal(&starting_step);
 
-    state.spec_status = StageStatus::InProgress;
-    state.save(&state_path)?;
+    ctx.intent.spec_status = StageStatus::InProgress;
+    ctx.save_intent()?;
 
-    let product_spec_path = docs_dir.join("product-spec.md");
+    let product_spec_path = ctx.product_spec_path();
 
     if start_ord <= spec_step_ordinal(&SpecStep::ProductSpecGeneration) {
         crate::output::print_step("Generating product spec from project description");
-        state.spec_step = Some(SpecStep::ProductSpecGeneration);
-        state.save(&state_path)?;
+        ctx.intent.spec_step = Some(SpecStep::ProductSpecGeneration);
+        ctx.save_intent()?;
 
         let mut cleanup = SingleFileGuard::new(&product_spec_path);
 
-        let product_template = loader.load("spec_product")?;
-        let mut ctx = ContextBuilder::new();
-        ctx.add_content("description", description);
+        let product_template = ctx.loader.load("spec_product")?;
+        let mut cb = ContextBuilder::new();
+        cb.add_content("description", description);
         let prompt = template::replace_vars(
-            &ctx.apply(&product_template),
+            &cb.apply(&product_template),
             &[
-                ("project_name", &config.project.name),
-                ("target_file", "docs/product-spec.md"),
+                ("project_name", &ctx.config.project.name),
+                ("target_file", &product_spec_path.display().to_string()),
             ],
         );
 
         let mut display = StreamDisplay::new();
-        display.set_context_stats(ctx.total_tokens(), ctx.block_stats().len());
-        let result = invoke_sub_agent(
+        display.set_context_stats(cb.total_tokens(), cb.block_stats().len());
+        let result = super::invoke_sub_agent(
             &prompt,
-            &config.models.spec,
-            config.effort.spec,
+            &ctx.config.spec.model,
+            ctx.config.spec.effort,
             Some(GENERATION_TOOLS),
-            Some(system_prompt.as_str()),
-            Some(project_dir),
+            Some(ctx.system_prompt.as_str()),
+            Some(&ctx.work_dir),
             &mut display,
-            &config.retry,
-            dry_run,
+            &ctx.config.retry,
+            ctx.dry_run,
         )
         .await?;
 
-        if dry_run {
+        if ctx.dry_run {
             return Ok(());
         }
 
-        state.spec_cost_usd += result.cost_usd;
-        state.total_cost_usd += result.cost_usd;
-        state.save(&state_path)?;
+        ctx.intent.spec_cost_usd += result.cost_usd;
+        ctx.intent.total_cost_usd += result.cost_usd;
+        ctx.save_intent()?;
 
         if !product_spec_path.exists() {
-            bail!("sub agent did not create docs/product-spec.md");
+            bail!("sub agent did not create {}", product_spec_path.display());
         }
 
         cleanup.defuse();
@@ -93,31 +86,33 @@ pub async fn run_spec(
             _ => 1,
         };
 
-        state.spec_step = Some(SpecStep::ProductSpecReview {
+        ctx.intent.spec_step = Some(SpecStep::ProductSpecReview {
             iteration: starting_iteration.saturating_sub(1),
         });
-        state.save(&state_path)?;
+        ctx.save_intent()?;
 
-        let review_template = loader.load("spec_review")?;
+        let review_template = ctx.loader.load("spec_review")?;
         let review_prompt = template::replace_vars(
             &review_template,
             &[
-                ("project_name", &config.project.name),
-                ("target_file", "docs/product-spec.md"),
+                ("project_name", &ctx.config.project.name),
+                ("target_file", &product_spec_path.display().to_string()),
             ],
         );
 
         let product_spec_path_clone = product_spec_path.clone();
+        let system_prompt_clone = ctx.system_prompt.clone();
+        let work_dir_clone = ctx.work_dir.clone();
         let mut review_params = ReviewParams {
-            config,
+            config: ctx.config,
             prompt_template: &review_prompt,
-            model: &config.models.review,
-            effort: config.effort.review,
-            max_iterations: config.review.max_iterations,
+            model: &ctx.config.spec.review_model,
+            effort: ctx.config.spec.review_effort,
+            max_iterations: ctx.config.spec.max_review_iterations,
             tools: Some(REVIEW_TOOLS),
-            system_prompt: Some(system_prompt.as_str()),
-            cwd: Some(project_dir),
-            dry_run,
+            system_prompt: Some(&system_prompt_clone),
+            cwd: Some(&work_dir_clone),
+            dry_run: ctx.dry_run,
             prior_findings: None,
         };
         let context_fn = || {
@@ -131,15 +126,15 @@ pub async fn run_spec(
 
         let converged = run_review_loop(
             &mut review_params,
-            config.effort.review,
+            ctx.config.spec.review_effort,
             starting_iteration,
             "Reviewing product spec",
             &context_fn,
             |iteration, cost| {
-                state.spec_cost_usd += cost;
-                state.total_cost_usd += cost;
-                state.spec_step = Some(SpecStep::ProductSpecReview { iteration });
-                state.save(&state_path)
+                ctx.intent.spec_cost_usd += cost;
+                ctx.intent.total_cost_usd += cost;
+                ctx.intent.spec_step = Some(SpecStep::ProductSpecReview { iteration });
+                ctx.save_intent()
             },
         )
         .await?;
@@ -147,60 +142,61 @@ pub async fn run_spec(
         if !converged {
             eprintln!(
                 "warning: product spec review did not converge after {} iterations",
-                config.review.max_iterations
+                ctx.config.spec.max_review_iterations
             );
         }
 
-        if config.interaction == InteractionMode::Milestones {
-            state.spec_step = Some(SpecStep::TechnicalSpecGeneration);
-            state.save(&state_path)?;
+        if ctx.config.interaction == InteractionMode::Milestones {
+            ctx.intent.spec_step = Some(SpecStep::TechnicalSpecGeneration);
+            ctx.save_intent()?;
             println!(
-                "Product spec complete. Review the spec at docs/product-spec.md, then re-run to continue."
+                "Product spec complete. Review the spec at {}, then re-run to continue.",
+                product_spec_path.display()
             );
             return Ok(());
         }
     }
 
-    let technical_spec_path = docs_dir.join("technical-spec.md");
+    let technical_spec_path = ctx.technical_spec_path();
     if start_ord <= spec_step_ordinal(&SpecStep::TechnicalSpecGeneration) {
         crate::output::print_step("Generating technical spec from product spec");
-        state.spec_step = Some(SpecStep::TechnicalSpecGeneration);
-        state.save(&state_path)?;
+        ctx.intent.spec_step = Some(SpecStep::TechnicalSpecGeneration);
+        ctx.save_intent()?;
 
         let mut cleanup = SingleFileGuard::new(&technical_spec_path);
 
-        let tech_template = loader.load("spec_technical")?;
+        let tech_template = ctx.loader.load("spec_technical")?;
         let mut tech_ctx = ContextBuilder::new();
         tech_ctx.add_file("product-spec.md", &product_spec_path)?;
         let tech_prompt = template::replace_vars(
             &tech_ctx.apply(&tech_template),
             &[
-                ("project_name", &config.project.name),
-                ("target_file", "docs/technical-spec.md"),
+                ("project_name", &ctx.config.project.name),
+                ("target_file", &technical_spec_path.display().to_string()),
             ],
         );
 
         let mut display = StreamDisplay::new();
         display.set_context_stats(tech_ctx.total_tokens(), tech_ctx.block_stats().len());
-        let result = invoke_sub_agent(
+        let result = super::invoke_sub_agent(
             &tech_prompt,
-            &config.models.spec,
-            config.effort.spec,
+            &ctx.config.spec.model,
+            ctx.config.spec.effort,
             Some(GENERATION_TOOLS),
-            Some(system_prompt.as_str()),
-            Some(project_dir),
+            Some(ctx.system_prompt.as_str()),
+            Some(&ctx.work_dir),
             &mut display,
-            &config.retry,
-            dry_run,
+            &ctx.config.retry,
+            ctx.dry_run,
         )
         .await?;
 
-        state.spec_cost_usd += result.cost_usd;
-        state.total_cost_usd += result.cost_usd;
-        state.save(&state_path)?;
+        ctx.intent.spec_cost_usd += result.cost_usd;
+        ctx.intent.total_cost_usd += result.cost_usd;
+        ctx.save_intent()?;
 
         if !technical_spec_path.exists() {
-            bail!("sub agent did not create docs/technical-spec.md");
+            bail!("sub agent did not create {}", technical_spec_path.display());
         }
 
         cleanup.defuse();
@@ -212,32 +208,34 @@ pub async fn run_spec(
             _ => 1,
         };
 
-        state.spec_step = Some(SpecStep::TechnicalSpecReview {
+        ctx.intent.spec_step = Some(SpecStep::TechnicalSpecReview {
             iteration: starting_iteration.saturating_sub(1),
         });
-        state.save(&state_path)?;
+        ctx.save_intent()?;
 
-        let tech_review_template = loader.load("spec_review")?;
+        let tech_review_template = ctx.loader.load("spec_review")?;
         let tech_review_prompt = template::replace_vars(
             &tech_review_template,
             &[
-                ("project_name", &config.project.name),
-                ("target_file", "docs/technical-spec.md"),
+                ("project_name", &ctx.config.project.name),
+                ("target_file", &technical_spec_path.display().to_string()),
             ],
         );
 
         let technical_spec_path_clone = technical_spec_path.clone();
         let product_spec_path_clone = product_spec_path.clone();
+        let system_prompt_clone = ctx.system_prompt.clone();
+        let work_dir_clone = ctx.work_dir.clone();
         let mut tech_review_params = ReviewParams {
-            config,
+            config: ctx.config,
             prompt_template: &tech_review_prompt,
-            model: &config.models.review,
-            effort: config.effort.review,
-            max_iterations: config.review.max_iterations,
+            model: &ctx.config.spec.review_model,
+            effort: ctx.config.spec.review_effort,
+            max_iterations: ctx.config.spec.max_review_iterations,
             tools: Some(REVIEW_TOOLS),
-            system_prompt: Some(system_prompt.as_str()),
-            cwd: Some(project_dir),
-            dry_run,
+            system_prompt: Some(&system_prompt_clone),
+            cwd: Some(&work_dir_clone),
+            dry_run: ctx.dry_run,
             prior_findings: None,
         };
         let context_fn = || {
@@ -253,15 +251,15 @@ pub async fn run_spec(
 
         let converged = run_review_loop(
             &mut tech_review_params,
-            config.effort.review,
+            ctx.config.spec.review_effort,
             starting_iteration,
             "Reviewing technical spec",
             &context_fn,
             |iteration, cost| {
-                state.spec_cost_usd += cost;
-                state.total_cost_usd += cost;
-                state.spec_step = Some(SpecStep::TechnicalSpecReview { iteration });
-                state.save(&state_path)
+                ctx.intent.spec_cost_usd += cost;
+                ctx.intent.total_cost_usd += cost;
+                ctx.intent.spec_step = Some(SpecStep::TechnicalSpecReview { iteration });
+                ctx.save_intent()
             },
         )
         .await?;
@@ -269,20 +267,144 @@ pub async fn run_spec(
         if !converged {
             eprintln!(
                 "warning: technical spec review did not converge after {} iterations",
-                config.review.max_iterations
+                ctx.config.spec.max_review_iterations
             );
         }
 
-        if config.interaction == InteractionMode::Milestones {
+        if ctx.config.interaction == InteractionMode::Milestones {
             println!(
-                "Technical spec complete. Review the spec at docs/technical-spec.md, then re-run to continue."
+                "Technical spec complete. Review the spec at {}, then re-run to continue.",
+                technical_spec_path.display()
             );
         }
     }
 
-    state.spec_status = StageStatus::Complete;
-    state.spec_step = None;
-    state.save(&state_path)?;
+    ctx.intent.spec_status = StageStatus::Complete;
+    ctx.intent.spec_step = None;
+    ctx.save_intent()?;
+
+    Ok(())
+}
+
+async fn amend_specs(ctx: &mut IntentContext<'_>) -> Result<()> {
+    let product_spec_path = ctx.product_spec_path();
+    let technical_spec_path = ctx.technical_spec_path();
+
+    if !product_spec_path.exists() || !technical_spec_path.exists() {
+        bail!(
+            "cannot amend specs: product.md and technical.md must exist in {}. Run `yoke discover` first.",
+            ctx.specs_dir.display()
+        );
+    }
+
+    crate::output::print_step("Amending specs for intent");
+
+    ctx.intent.spec_status = StageStatus::InProgress;
+    ctx.save_intent()?;
+
+    let amend_template = ctx.loader.load("spec_amend")?;
+
+    let mut cb = ContextBuilder::new();
+    cb.add_file("product spec", &product_spec_path)?;
+    cb.add_file("technical spec", &technical_spec_path)?;
+    cb.add_content("intent description", &ctx.intent.description);
+
+    let prompt = template::replace_vars(
+        &cb.apply(&amend_template),
+        &[
+            ("project_name", &ctx.config.project.name),
+            ("intent_title", &ctx.intent.title),
+            ("intent_id", &ctx.intent.id),
+            (
+                "product_spec_path",
+                &product_spec_path.display().to_string(),
+            ),
+            (
+                "technical_spec_path",
+                &technical_spec_path.display().to_string(),
+            ),
+        ],
+    );
+
+    let mut display = StreamDisplay::new();
+    display.set_context_stats(cb.total_tokens(), cb.block_stats().len());
+
+    let result = super::invoke_sub_agent(
+        &prompt,
+        &ctx.config.spec.model,
+        ctx.config.spec.effort,
+        Some(GENERATION_TOOLS),
+        Some(ctx.system_prompt.as_str()),
+        Some(&ctx.work_dir),
+        &mut display,
+        &ctx.config.retry,
+        ctx.dry_run,
+    )
+    .await?;
+
+    ctx.intent.spec_cost_usd += result.cost_usd;
+    ctx.intent.total_cost_usd += result.cost_usd;
+
+    let review_template = ctx.loader.load("spec_review")?;
+    let review_prompt = template::replace_vars(
+        &review_template,
+        &[
+            ("project_name", &ctx.config.project.name),
+            ("target_file", &product_spec_path.display().to_string()),
+        ],
+    );
+
+    let product_clone = product_spec_path.clone();
+    let technical_clone = technical_spec_path.clone();
+    let system_prompt = ctx.system_prompt.clone();
+    let work_dir_clone = ctx.work_dir.clone();
+    let mut review_params = ReviewParams {
+        config: ctx.config,
+        prompt_template: &review_prompt,
+        model: &ctx.config.spec.review_model,
+        effort: ctx.config.spec.review_effort,
+        max_iterations: ctx.config.spec.max_review_iterations,
+        tools: Some(REVIEW_TOOLS),
+        system_prompt: Some(&system_prompt),
+        cwd: Some(&work_dir_clone),
+        dry_run: ctx.dry_run,
+        prior_findings: None,
+    };
+    let context_fn = || {
+        let prod = product_clone.clone();
+        let tech = technical_clone.clone();
+        async move {
+            let mut cb = ContextBuilder::new();
+            cb.add_file("product spec", &prod)?;
+            cb.add_file("technical spec", &tech)?;
+            Ok(cb)
+        }
+    };
+
+    let converged = run_review_loop(
+        &mut review_params,
+        ctx.config.spec.review_effort,
+        1,
+        "Reviewing spec amendments",
+        &context_fn,
+        |_iteration, cost| {
+            ctx.intent.spec_cost_usd += cost;
+            ctx.intent.total_cost_usd += cost;
+            ctx.save_intent()
+        },
+    )
+    .await?;
+
+    if !converged {
+        eprintln!(
+            "warning: spec amendment review did not converge after {} iterations",
+            ctx.config.spec.max_review_iterations
+        );
+    }
+
+    ctx.intent.spec_status = StageStatus::Complete;
+    ctx.intent.spec_step = None;
+    ctx.save_intent()?;
 
     Ok(())
 }

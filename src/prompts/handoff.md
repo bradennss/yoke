@@ -33,3 +33,5 @@ Approaches that were attempted during implementation and didn't work. Include wh
 What the next phase inherits and should be aware of before starting: stable types, defined schemas, trait boundaries, configuration patterns, test utilities available for reuse. Be specific about file paths and public API surfaces.
 
 {{context}}
+
+{{partial:knowledge_update}}

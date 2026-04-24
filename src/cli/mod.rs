@@ -1,7 +1,9 @@
+mod discover;
 mod init;
-mod plan;
+mod knowledge;
+mod list;
+mod new;
 mod run;
-mod spec;
 mod status;
 
 use std::path::PathBuf;
@@ -42,31 +44,61 @@ pub enum Command {
     /// Initialize a new yoke project in the current directory
     Init,
 
-    /// Generate product and technical specs from a description
-    Spec {
-        /// Rough description of the project
+    /// Discover and generate specs from an existing codebase
+    Discover,
+
+    /// Create a new intent
+    New {
+        /// Description of the intent
         description: Option<String>,
 
         /// Read description from a file
         #[arg(long)]
         file: Option<PathBuf>,
+
+        /// Classification (build, feature, fix, refactor, maintenance)
+        #[arg(long, value_name = "CLASS")]
+        class: Option<String>,
+
+        /// Depth override (full, light, minimal)
+        #[arg(long)]
+        depth: Option<String>,
+
+        /// Parent intent id
+        #[arg(long)]
+        parent: Option<String>,
+
+        /// Intent ids that block this intent
+        #[arg(long, num_args = 1..)]
+        blocked_by: Option<Vec<String>>,
+
+        /// Skip confirmation prompts
+        #[arg(long, short)]
+        yes: bool,
     },
 
-    /// Generate the implementation plan from specs
-    Plan,
+    /// List all intents
+    List,
 
-    /// Execute a phase of the implementation plan
+    /// Run the next pending intent (or a specific intent/phase)
     Run {
-        /// Phase number to execute (defaults to next pending phase)
+        /// Intent id (e.g., i-003)
+        intent: Option<String>,
+
+        /// Run a specific phase number
+        #[arg(long)]
         phase: Option<usize>,
 
-        /// Restart from a specific step
+        /// Restart from a specific step within a phase
         #[arg(long)]
         from: Option<String>,
     },
 
     /// Show the current project status
     Status,
+
+    /// Display the project knowledge base
+    Knowledge,
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -77,21 +109,52 @@ pub async fn run(cli: Cli) -> Result<()> {
             let cwd = std::env::current_dir()?;
             init::run(&cwd)
         }
-        Command::Spec { description, file } => {
+        Command::Discover => {
             let cwd = std::env::current_dir()?;
-            spec::run(&cwd, description, file, dry_run).await
+            discover::run(&cwd, dry_run).await
         }
-        Command::Plan => {
+        Command::New {
+            description,
+            file,
+            class,
+            depth,
+            parent,
+            blocked_by,
+            yes,
+        } => {
             let cwd = std::env::current_dir()?;
-            plan::run(&cwd, dry_run).await
+            new::run(
+                &cwd,
+                description,
+                file,
+                class,
+                depth,
+                parent,
+                blocked_by,
+                yes,
+                dry_run,
+            )
+            .await
         }
-        Command::Run { phase, from } => {
+        Command::List => {
             let cwd = std::env::current_dir()?;
-            run::run(&cwd, phase, from, dry_run).await
+            list::run(&cwd)
+        }
+        Command::Run {
+            intent,
+            phase,
+            from,
+        } => {
+            let cwd = std::env::current_dir()?;
+            run::run(&cwd, intent, phase, from, dry_run).await
         }
         Command::Status => {
             let cwd = std::env::current_dir()?;
             status::run(&cwd)
+        }
+        Command::Knowledge => {
+            let cwd = std::env::current_dir()?;
+            knowledge::run(&cwd)
         }
     }
 }

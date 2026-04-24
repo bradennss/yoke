@@ -1,6 +1,9 @@
 pub mod claude;
 pub mod cli;
 pub mod config;
+pub mod git;
+pub mod intent;
+pub mod knowledge;
 pub mod output;
 pub mod prompts;
 pub mod state;

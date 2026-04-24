@@ -15,6 +15,12 @@ const HANDOFF: &str = include_str!("handoff.md");
 const SPEC_EXTRACT: &str = include_str!("spec_extract.md");
 const PHASE_PLAN_GENERATE: &str = include_str!("phase_plan_generate.md");
 const REVIEW_COMMON: &str = include_str!("review_common.md");
+const DISCOVER_PRODUCT: &str = include_str!("discover_product.md");
+const DISCOVER_TECHNICAL: &str = include_str!("discover_technical.md");
+const DISCOVER_REVIEW: &str = include_str!("discover_review.md");
+const CLASSIFY: &str = include_str!("classify.md");
+const KNOWLEDGE_UPDATE: &str = include_str!("knowledge_update.md");
+const SPEC_AMEND: &str = include_str!("spec_amend.md");
 
 pub struct PromptLoader {
     override_dir: Option<PathBuf>,
@@ -54,6 +60,12 @@ impl PromptLoader {
             "spec_extract" => SPEC_EXTRACT,
             "phase_plan_generate" => PHASE_PLAN_GENERATE,
             "review_common" => REVIEW_COMMON,
+            "discover_product" => DISCOVER_PRODUCT,
+            "discover_technical" => DISCOVER_TECHNICAL,
+            "discover_review" => DISCOVER_REVIEW,
+            "classify" => CLASSIFY,
+            "knowledge_update" => KNOWLEDGE_UPDATE,
+            "spec_amend" => SPEC_AMEND,
             _ => anyhow::bail!("unknown prompt template: {name}"),
         };
 
@@ -97,6 +109,12 @@ mod tests {
         "handoff",
         "spec_extract",
         "review_common",
+        "discover_product",
+        "discover_technical",
+        "discover_review",
+        "classify",
+        "knowledge_update",
+        "spec_amend",
     ];
 
     #[test]
@@ -122,6 +140,11 @@ mod tests {
         "code_review",
         "handoff",
         "spec_extract",
+        "discover_product",
+        "discover_technical",
+        "discover_review",
+        "classify",
+        "spec_amend",
     ];
 
     #[test]

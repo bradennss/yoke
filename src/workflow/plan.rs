@@ -2,109 +2,109 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::{InteractionMode, YokeConfig};
+use crate::config::InteractionMode;
 use crate::output::StreamDisplay;
-use crate::state::{PhaseState, PhaseStatus, PlanStep, StageStatus, YokeState, plan_step_ordinal};
+use crate::state::{PhaseState, PhaseStatus, PlanStep, StageStatus, plan_step_ordinal};
 use crate::template;
+use crate::workflow::IntentContext;
 use crate::workflow::cleanup::{FileCleanupGuard, SingleFileGuard};
 use crate::workflow::context::ContextBuilder;
 use crate::workflow::review::{ReviewParams, run_review_loop};
-use crate::workflow::{build_system_prompt, invoke_sub_agent, prompt_loader};
 
 const GENERATION_TOOLS: &str = "Read,Write,Edit,Glob,Grep,Bash";
 const REVIEW_TOOLS: &str = "Read,Write,Edit,Glob,Grep";
 
-pub async fn run_plan(
-    project_dir: &Path,
-    config: &YokeConfig,
-    state: &mut YokeState,
-    dry_run: bool,
-) -> Result<()> {
-    let docs_dir = project_dir.join("docs");
-    let product_spec_path = docs_dir.join("product-spec.md");
-    let technical_spec_path = docs_dir.join("technical-spec.md");
+pub async fn run_plan(ctx: &mut IntentContext<'_>) -> Result<()> {
+    let product_spec_path = ctx.product_spec_path();
+    let technical_spec_path = ctx.technical_spec_path();
 
     if !product_spec_path.exists() {
-        bail!("docs/product-spec.md not found. Run `yoke spec` first to generate specifications.");
+        bail!(
+            "{} not found. Run specs first to generate specifications.",
+            product_spec_path.display()
+        );
     }
     if !technical_spec_path.exists() {
         bail!(
-            "docs/technical-spec.md not found. Run `yoke spec` first to generate specifications."
+            "{} not found. Run specs first to generate specifications.",
+            technical_spec_path.display()
         );
     }
 
-    let loader = prompt_loader(project_dir);
-    let system_prompt = build_system_prompt(config, &loader)?;
-    let state_path = project_dir.join(".yoke/state.json");
-
-    let starting_step = state.plan_step.clone().unwrap_or(PlanStep::PlanGeneration);
+    let starting_step = ctx
+        .intent
+        .plan_step
+        .clone()
+        .unwrap_or(PlanStep::PlanGeneration);
     let start_ord = plan_step_ordinal(&starting_step);
 
-    state.plan_status = StageStatus::InProgress;
-    state.save(&state_path)?;
+    ctx.intent.plan_status = StageStatus::InProgress;
+    ctx.save_intent()?;
 
-    let plan_path = docs_dir.join("plan.md");
-    let phases_dir = docs_dir.join("phases");
+    let plan_path = ctx.plan_path();
+    let phases_dir = ctx.phases_dir();
 
     if start_ord <= plan_step_ordinal(&PlanStep::PlanGeneration) {
         crate::output::print_step("Generating implementation plan and breaking into phases");
-        state.plan_step = Some(PlanStep::PlanGeneration);
-        state.save(&state_path)?;
+        ctx.intent.plan_step = Some(PlanStep::PlanGeneration);
+        ctx.save_intent()?;
 
         let mut plan_cleanup = SingleFileGuard::new(&plan_path);
         let mut phases_cleanup = FileCleanupGuard::new(&phases_dir);
 
-        let plan_template = loader.load("plan_generate")?;
-        let mut ctx = ContextBuilder::new();
-        ctx.add_file("product-spec.md", &product_spec_path)?;
-        ctx.add_file("technical-spec.md", &technical_spec_path)?;
+        let plan_template = ctx.loader.load("plan_generate")?;
+        let mut cb = ContextBuilder::new();
+        cb.add_file("product-spec.md", &product_spec_path)?;
+        cb.add_file("technical-spec.md", &technical_spec_path)?;
         let prompt = template::replace_vars(
-            &ctx.apply(&plan_template),
+            &cb.apply(&plan_template),
             &[
-                ("project_name", &config.project.name),
-                ("target_file", "docs/plan.md"),
+                ("project_name", &ctx.config.project.name),
+                ("target_file", &plan_path.display().to_string()),
             ],
         );
 
         let mut display = StreamDisplay::new();
-        display.set_context_stats(ctx.total_tokens(), ctx.block_stats().len());
-        let result = invoke_sub_agent(
+        display.set_context_stats(cb.total_tokens(), cb.block_stats().len());
+        let result = super::invoke_sub_agent(
             &prompt,
-            &config.models.planning,
-            config.effort.planning,
+            &ctx.config.plan.model,
+            ctx.config.plan.effort,
             Some(GENERATION_TOOLS),
-            Some(system_prompt.as_str()),
-            Some(project_dir),
+            Some(ctx.system_prompt.as_str()),
+            Some(&ctx.work_dir),
             &mut display,
-            &config.retry,
-            dry_run,
+            &ctx.config.retry,
+            ctx.dry_run,
         )
         .await?;
 
-        if dry_run {
+        if ctx.dry_run {
             return Ok(());
         }
 
-        state.plan_cost_usd += result.cost_usd;
-        state.total_cost_usd += result.cost_usd;
-        state.save(&state_path)?;
+        ctx.intent.plan_cost_usd += result.cost_usd;
+        ctx.intent.total_cost_usd += result.cost_usd;
+        ctx.save_intent()?;
 
         if !plan_path.exists() {
-            bail!("sub agent did not create docs/plan.md");
+            bail!("sub agent did not create {}", plan_path.display());
         }
 
         plan_cleanup.defuse();
         phases_cleanup.defuse();
     }
 
-    // Step 1: Verify phase files exist
     if start_ord <= plan_step_ordinal(&PlanStep::PhaseVerification) {
-        state.plan_step = Some(PlanStep::PhaseVerification);
-        state.save(&state_path)?;
+        ctx.intent.plan_step = Some(PlanStep::PhaseVerification);
+        ctx.save_intent()?;
 
         let phase_files = glob_phase_files(&phases_dir)?;
         if phase_files.is_empty() {
-            bail!("no phase files found in docs/phases/. Expected files matching NNN-title.md.");
+            bail!(
+                "no phase files found in {}. Expected files matching NNN-title.md.",
+                phases_dir.display()
+            );
         }
     }
 
@@ -114,31 +114,33 @@ pub async fn run_plan(
             _ => 1,
         };
 
-        state.plan_step = Some(PlanStep::PlanReview {
+        ctx.intent.plan_step = Some(PlanStep::PlanReview {
             iteration: starting_iteration.saturating_sub(1),
         });
-        state.save(&state_path)?;
+        ctx.save_intent()?;
 
-        let review_template = loader.load("plan_review")?;
+        let review_template = ctx.loader.load("plan_review")?;
         let review_prompt = template::replace_vars(
             &review_template,
             &[
-                ("project_name", &config.project.name),
-                ("target_file", "docs/plan.md"),
+                ("project_name", &ctx.config.project.name),
+                ("target_file", &plan_path.display().to_string()),
             ],
         );
 
         let plan_path_clone = plan_path.clone();
+        let system_prompt_clone = ctx.system_prompt.clone();
+        let work_dir_clone = ctx.work_dir.clone();
         let mut review_params = ReviewParams {
-            config,
+            config: ctx.config,
             prompt_template: &review_prompt,
-            model: &config.models.review,
-            effort: config.effort.review,
-            max_iterations: config.review.max_iterations,
+            model: &ctx.config.plan.review_model,
+            effort: ctx.config.plan.review_effort,
+            max_iterations: ctx.config.plan.max_review_iterations,
             tools: Some(REVIEW_TOOLS),
-            system_prompt: Some(system_prompt.as_str()),
-            cwd: Some(project_dir),
-            dry_run,
+            system_prompt: Some(&system_prompt_clone),
+            cwd: Some(&work_dir_clone),
+            dry_run: ctx.dry_run,
             prior_findings: None,
         };
         let context_fn = || {
@@ -152,15 +154,15 @@ pub async fn run_plan(
 
         let converged = run_review_loop(
             &mut review_params,
-            config.effort.review,
+            ctx.config.plan.review_effort,
             starting_iteration,
             "Reviewing implementation plan",
             &context_fn,
             |iteration, cost| {
-                state.plan_cost_usd += cost;
-                state.total_cost_usd += cost;
-                state.plan_step = Some(PlanStep::PlanReview { iteration });
-                state.save(&state_path)
+                ctx.intent.plan_cost_usd += cost;
+                ctx.intent.total_cost_usd += cost;
+                ctx.intent.plan_step = Some(PlanStep::PlanReview { iteration });
+                ctx.save_intent()
             },
         )
         .await?;
@@ -168,12 +170,11 @@ pub async fn run_plan(
         if !converged {
             eprintln!(
                 "warning: plan review did not converge after {} iterations",
-                config.review.max_iterations
+                ctx.config.plan.max_review_iterations
             );
         }
     }
 
-    // Re-glob after review (reviewer may have added or renamed phase files)
     let phase_files = glob_phase_files(&phases_dir)?;
     let mut phases: Vec<PhaseState> = phase_files
         .into_iter()
@@ -191,13 +192,16 @@ pub async fn run_plan(
         .collect();
     phases.sort_by_key(|p| p.number);
 
-    state.phases = phases;
-    state.plan_status = StageStatus::Complete;
-    state.plan_step = None;
-    state.save(&state_path)?;
+    ctx.intent.phases = phases;
+    ctx.intent.plan_status = StageStatus::Complete;
+    ctx.intent.plan_step = None;
+    ctx.save_intent()?;
 
-    if config.interaction == InteractionMode::Milestones {
-        println!("Plan complete. Review the plan at docs/plan.md, then re-run to continue.");
+    if ctx.config.interaction == InteractionMode::Milestones {
+        println!(
+            "Plan complete. Review the plan at {}, then re-run to continue.",
+            plan_path.display()
+        );
     }
 
     Ok(())
